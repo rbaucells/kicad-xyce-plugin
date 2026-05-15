@@ -1,0 +1,37 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Create Package",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "hatch",
+            "console": "integratedTerminal",
+            "args": ["build", "--target", "kicad-package"]
+        },
+        {
+            "name": "Run Plugin",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/plugin",
+            "module": "run_simulator",
+            "console": "integratedTerminal",
+            "env": {
+                "KICAD_API_SOCKET": "ipc:///tmp/kicad/api.sock",
+                "KICAD_API_TOKEN": "16077905-fb16-4eb0-a586-5db87ace4c87"
+            },
+            "args": ["--log-level=DEBUG"],
+            "justMyCode": false
+        },
+        {
+            "name": "Run Simulator",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/plugin",
+            "module": ".",
+            "console": "integratedTerminal",
+            "args": ["--log-level=DEBUG"],
+            "justMyCode": false
+        }
+    ]
+}
