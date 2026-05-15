@@ -1,0 +1,68 @@
+Third-Party Notices
+===================
+
+This project includes third-party components under their own licenses.
+
+1) KiCad icon assets
+--------------------
+Origin:
+- Project: KiCad
+- Website: https://www.kicad.org/
+- Source repository: https://github.com/KiCad/kicad-source-mirror
+- Source paths used by KiCad for icon generation:
+  - resources/bitmaps_png/sources/
+  - resources/images.tar.gz
+
+Material used in this repository:
+- Selected icon files in plugin/kicad-icons/
+
+Copyright:
+- Copyright The KiCad Developers and contributors
+
+License:
+- Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+- License URL: https://creativecommons.org/licenses/by-sa/4.0/
+- Full legal code copy in this repository: plugin/kicad-icons/COPYING
+
+Attribution statement:
+- Icons in plugin/kicad-icons/ are derived from KiCad icon assets.
+
+Changes statement:
+- This repository redistributes selected icon files for plugin use.
+- No endorsement by the KiCad project is implied.
+
+ShareAlike note:
+- If these icon assets are adapted and redistributed, the adapted material
+  must be licensed under CC BY-SA 4.0.
+
+2) Python dependencies
+----------------------
+This project depends on third-party Python packages (for example kicad-python,
+PySide6, numpy, and dataclasses-json), each distributed under its own license.
+Refer to those projects and package metadata for exact terms.
+
+3) Xyce documentation PDFs
+--------------------------
+Origin:
+- Project: Xyce Parallel Electrical Simulator
+- Website: https://xyce.sandia.gov/
+- Source repository: https://github.com/Xyce/Xyce
+
+Material used in this repository:
+- xyce-docs/Xyce_RG.pdf
+- xyce-docs/Xyce_UG.pdf
+
+Copyright:
+- Copyright 2002-2026 National Technology and Engineering Solutions of Sandia,
+  LLC (NTESS)
+
+License:
+- Xyce project license is GNU General Public License (GPL)
+- Upstream license copy used in this repository: xyce-docs/COPYING.XYCE
+
+Attribution statement:
+- Xyce_RG.pdf and Xyce_UG.pdf are sourced from Xyce documentation.
+
+Redistribution note:
+- Keep the original copyright and license notices with the documentation.
+- If these PDFs are replaced with modified versions, include a clear change note.

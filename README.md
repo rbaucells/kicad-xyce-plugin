@@ -98,6 +98,13 @@ This repository also bundles third-party icon assets from KiCad under CC-BY-SA 4
 - plugin/kicad-icons/COPYING
 - THIRD_PARTY_NOTICES.txt
 
-When redistributing this project, include both the project LICENSE file and the icon-license files listed above.
+This repository also bundles third-party Xyce documentation PDFs in xyce-docs. See:
+
+- xyce-docs/Xyce_RG.pdf
+- xyce-docs/Xyce_UG.pdf
+- xyce-docs/COPYING.XYCE
+- THIRD_PARTY_NOTICES.txt
+
+When redistributing this project, include the project LICENSE file and all third-party license and notice files listed above.
 
 Python dependencies (including the KiCad Python API client library) are third-party components distributed under their own licenses. See THIRD_PARTY_NOTICES.txt for attribution and redistribution notes.
