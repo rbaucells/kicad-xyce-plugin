@@ -1,6 +1,8 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 import QtGraphs
 
 Item {
@@ -12,6 +14,12 @@ Item {
     property bool fftVisible: false
     property bool stepToolVisible: false
     property bool smithChartVisible: false
+
+    // simulation log panel
+    property bool logVisible: false
+
+    // status bar message shown as an overlay at the bottom of the view
+    property string statusText: ""
 
     signal zoomRegionSelected(int chartIndex, real x0Ratio, real y0Ratio, real x1Ratio, real y1Ratio)
     signal menuZoomToFit(int chartIndex)
@@ -27,6 +35,92 @@ Item {
     signal menuSmithChart(int chartIndex)
     signal pointerMoved(int chartIndex, real xRatio)
     signal pointerExited(int chartIndex)
+
+    // exposed log signals
+    signal logAppendRequested(string text)
+    signal logClearRequested()
+
+    component SimulationLogPanel: Rectangle {
+        id: logPanel
+        Layout.fillWidth: true
+        Layout.preferredHeight: 200
+        color: "#efefe8" // Match main window background
+
+        // visual separator from charts
+        Rectangle {
+            anchors { top: parent.top; left: parent.left; right: parent.right }
+            height: 1
+            color: "#d0d0c8"
+        }
+
+        ColumnLayout {
+
+            anchors.fill: parent
+            anchors.topMargin: 1
+            spacing: 0
+
+            Rectangle {
+
+                Layout.fillWidth: true
+                height: 24
+                color: "#dcdcd4" // Slightly darker header
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 4
+                    Label {
+                        text: "Simulation Output"
+                        color: "#4a5060"
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                    Item { Layout.fillWidth: true }
+                    ToolButton {
+                        onClicked: root.logVisible = false
+                        padding: 0
+                        background: Rectangle {
+                            color: hovered ? "#d0d0c8" : "transparent"
+                            radius: 3
+                        }
+                        contentItem: Image {
+                            source: "kicad-icons/cancel_24.png"
+                            sourceSize: Qt.size(14, 14)
+                            fillMode: Image.PreserveAspectFit
+                            opacity: 0.7
+                        }
+                    }
+                }
+            }
+
+            ScrollView {
+
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+
+                TextArea {
+                    id: logTextArea
+                    readOnly: true
+                    color: "#2a2d35" // Dark text for light background
+                    font.family: "Menlo, Courier New, Courier"
+                    font.pixelSize: 12
+                    textFormat: TextEdit.PlainText
+                    padding: 8
+
+                    Connections {
+                        target: root
+                        function onLogAppendRequested(text) {
+                            logTextArea.append(text);
+                        }
+                        function onLogClearRequested() {
+                            logTextArea.clear();
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     component ChartPanel: Item {
         id: panel
@@ -340,8 +434,8 @@ Item {
                 bottom: parent.bottom
             }
             color: "#1a1b1e"
-            height: 20
-            opacity: panel.legendVisible ? 1 : 0
+            height: panel.legendVisible ? 20 : 0
+            visible: panel.legendVisible
 
             Row {
                 anchors.top: parent.top
@@ -509,49 +603,64 @@ Item {
         id: chartsModel
     }
 
-    Column {
-        id: chartsColumn
-        anchors.fill: parent
-        spacing: 2
+    ColumnLayout {
+        anchors {
+            fill: parent
+            bottomMargin: root.statusText !== "" ? 22 : 0
+        }
+        spacing: 0
 
-        Repeater {
-            id: chartsRepeater
-            model: chartsModel
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Column {
+                id: chartsColumn
+                anchors.fill: parent
+                spacing: 0
 
-            delegate: ChartPanel {
-                // index is a required property under pragma ComponentBehavior: Bound
-                required property int index
-
-                chartIndex: index
-                width: chartsColumn.width
-                // distribute height equally, accounting for inter-panel spacing
-                height: (chartsColumn.height - chartsColumn.spacing * Math.max(0, chartsModel.count - 1)) / Math.max(1, chartsModel.count)
-
-                onZoomRegionSelected: (x0, y0, x1, y1) => root.zoomRegionSelected(index, x0, y0, x1, y1)
-                // bubble menu action signals up to root, adding chartIndex
-                onMenuZoomToFit: root.menuZoomToFit(index)
-                onMenuAutorange: root.menuAutorange(index)
-                onMenuZoomAbscissaExtent: root.menuZoomAbscissaExtent(index)
-                onMenuAddRemovePlots: root.menuAddRemovePlots(index)
-                onMenuDeleteAllPlots: root.menuDeleteAllPlots(index)
-                onMenuDeleteChart: root.menuDeleteChart(index)
-                // bubble pointer hover signals up to root, adding chartIndex
-                onPointerMoved: xRatio => root.pointerMoved(index, xRatio)
-                onPointerExited: root.pointerExited(index)
-                // position and reveal the single shared context menu on right-click
-                onMenuOpenRequested: (localX, localY, sc) => {
-                    // map from panel-local coordinates to root-local coordinates
-                    var pt = mapToItem(root, localX, localY);
-                    root._activeChartIndex = index;
-                    root._activeChartSeriesCount = sc;
-                    // clamp so the menu never overflows the root boundary
-                    contextMenu.x = Math.min(pt.x, root.width - contextMenu.width - 2);
-                    contextMenu.y = Math.min(pt.y, root.height - contextMenu.height - 2);
-                    // show menu
-                    contextMenu.visible = true;
+                Repeater {
+                    id: chartsRepeater
+                    model: chartsModel
+                    delegate: ChartPanel {
+                        required property int index
+                        chartIndex: index
+                        width: chartsColumn.width
+                        // use full height minus spacing
+                        height: (chartsColumn.height - (chartsColumn.spacing * Math.max(0, chartsModel.count - 1))) / Math.max(1, chartsModel.count)
+                        // ... event handlers
+                        onZoomRegionSelected: (x0, y0, x1, y1) => root.zoomRegionSelected(index, x0, y0, x1, y1)
+                        onMenuZoomToFit: root.menuZoomToFit(index)
+                        onMenuAutorange: root.menuAutorange(index)
+                        onMenuZoomAbscissaExtent: root.menuZoomAbscissaExtent(index)
+                        onMenuAddRemovePlots: root.menuAddRemovePlots(index)
+                        onMenuDeleteAllPlots: root.menuDeleteAllPlots(index)
+                        onMenuDeleteChart: root.menuDeleteChart(index)
+                        onPointerMoved: xRatio => root.pointerMoved(index, xRatio)
+                        onPointerExited: root.pointerExited(index)
+                        onMenuOpenRequested: (localX, localY, sc) => {
+                            var pt = mapToItem(root, localX, localY);
+                            root._activeChartIndex = index;
+                            root._activeChartSeriesCount = sc;
+                            contextMenu.x = Math.min(pt.x, root.width - contextMenu.width - 2);
+                            contextMenu.y = Math.min(pt.y, root.height - contextMenu.height - 2);
+                            contextMenu.visible = true;
+                        }
+                    }
                 }
             }
         }
+
+        Loader {
+            Layout.fillWidth: true
+            Layout.preferredHeight: root.logVisible ? 200 : 0
+            Layout.maximumHeight: root.logVisible ? 200 : 0
+            sourceComponent: root.logVisible ? logComponent : undefined
+        }
+    }
+
+    Component {
+        id: logComponent
+        SimulationLogPanel {}
     }
 
     MouseArea {
@@ -560,6 +669,41 @@ Item {
         z: 998
         acceptedButtons: Qt.AllButtons
         onPressed: contextMenu.visible = false
+    }
+
+    // status bar overlay — rendered inside the QML view so Qt widget layout
+    // is never affected and no gap can appear
+    Rectangle {
+        id: statusBar
+        visible: root.statusText !== ""
+        anchors {
+            left: parent.left
+            right: parent.right
+            bottom: parent.bottom
+        }
+        height: 22
+        color: "#efefe8"
+        z: 997
+
+        Rectangle {
+            anchors { top: parent.top; left: parent.left; right: parent.right }
+            height: 1
+            color: "#d0d0c8"
+        }
+
+        Text {
+            anchors {
+                left: parent.left
+                right: parent.right
+                verticalCenter: parent.verticalCenter
+                leftMargin: 8
+                rightMargin: 8
+            }
+            text: root.statusText
+            color: "#333333"
+            font.pixelSize: 11
+            elide: Text.ElideRight
+        }
     }
 
     Rectangle {

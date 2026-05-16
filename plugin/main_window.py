@@ -2,15 +2,16 @@ import logging
 from pathlib import Path
 
 from kipy import KiCad
-from PySide6.QtCore import QSize, QTimer, QUrl, Slot
+from PySide6.QtCore import QSize, QTimer, QUrl, Slot, Signal
 from PySide6.QtGui import QAction, QColor, QKeySequence
 from PySide6.QtQuick import QQuickView
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QWidget
+from PySide6.QtWidgets import QFileDialog, QMainWindow, QWidget, QVBoxLayout
 
 from config_dialog import ConfigDialog
 from expression import Expression
 from kicad_icons import get_kicad_icon, KiCadIcon, load_kicad_icons
 from plugin_config import PluginConfig
+from run_xyce_simulation import run_xyce_simulation, XyceSimulationRunner
 from simulation_dialog import SimulationDialog
 from window import load_app_icon, log_screen_info
 
@@ -23,6 +24,10 @@ _BG = "#efefe8"
 
 
 class MainWindow(QMainWindow):
+
+    # signals for log panel updates
+    logAppendRequested = Signal(str)
+    logClearRequested = Signal()
 
     def __init__(self, kicad_client: KiCad, plugin_config: PluginConfig):
         super().__init__()
@@ -38,6 +43,7 @@ class MainWindow(QMainWindow):
 
         # initialize data structures
         self._charts = []  # : list[Chart] = []
+        self._runner: XyceSimulationRunner | None = None
         # store currently selected simulation parameters from the dialog
         self._simulation_parameters = None
 
@@ -53,11 +59,30 @@ class MainWindow(QMainWindow):
         self._qml_view.setSource(QUrl.fromLocalFile(str(_QML_FILE)))
         # embed the single QWindow into the main window's central area
         self._container = QWidget.createWindowContainer(self._qml_view, self)
-        self.setCentralWidget(self._container)
+        # Wrap the container in a widget to handle resizing better
+        self._central_widget = QWidget()
+        self._layout = QVBoxLayout(self._central_widget)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+        self._layout.addWidget(self._container)
+        # hide the built-in QMainWindow status bar so it never takes any space
+        self.statusBar().hide()
+        self.setCentralWidget(self._central_widget)
         # create the native main menu structure
         self._create_main_menu()
         # create the native toolbar
         self._create_toolbar()
+        # timer used to auto-clear timed status messages
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(lambda: self._show_status(""))
+
+    def _show_status(self, message: str, timeout_ms: int = 0) -> None:
+        # display a status message as an overlay inside the QML view
+        self._status_timer.stop()
+        self._root.setProperty("statusText", message)
+        if timeout_ms > 0:
+            self._status_timer.start(timeout_ms)
 
     def sizeHint(self):
         return QSize(1200, 800)
@@ -91,7 +116,13 @@ class MainWindow(QMainWindow):
         # connect pointer hover signals to update the status bar
         # self._root.pointerMoved.connect(self._on_pointer_moved)
         # self._root.pointerExited.connect(self._on_pointer_exited)
+
+        # wire custom log signals to qml panel
+        self.logAppendRequested.connect(self._root.logAppendRequested)
+        self.logClearRequested.connect(self._root.logClearRequested)
+
         # populate charts after the event loop starts so the window is visible first
+
         QTimer.singleShot(0, self._populate_charts)
         # log screen information for debugging purposes
         if logger.isEnabledFor(logging.DEBUG):
@@ -235,6 +266,68 @@ class MainWindow(QMainWindow):
         # # render chart
         # chart.render("", self._abscissa_scale.value, set(expressions))
 
+    def _setup_netlist(self) -> str:
+        # returns a placeholder netlist for simulation execution
+        return "* Xyce Simulation\nV1 1 0 5V\nR1 1 0 1k\n.END"
+
+    @Slot(str)
+    def _on_simulation_started(self, netlist_path: str, output_path: str) -> None:
+        # update status to indicate simulation started
+        self._show_status("Simulation started...")
+        # open the log panel and clear any previous session output
+        self._root.setProperty("logVisible", True)
+        self.logClearRequested.emit()
+
+    @Slot(str)
+    def _on_stdout_received(self, text: str) -> None:
+        # append simulation output to logs or status bar
+        logger.info("Xyce: %s", text)
+        self.logAppendRequested.emit(text)
+
+    @Slot(str)
+    def _on_stderr_received(self, text: str) -> None:
+        # log simulation errors
+        logger.error("Xyce stderr: %s", text)
+        self.logAppendRequested.emit(f"ERROR: {text}")
+        self._show_status(f"Simulation error: {text}", 5000)
+
+    @Slot(int, int, bool, str)
+    def _on_simulation_finished(self, exit_code: int, exit_status: int, was_canceled: bool, output_path: str) -> None:
+        # clean up and notify user
+        if was_canceled:
+            self._show_status("Simulation canceled")
+        elif exit_code == 0:
+            self._show_status("Simulation finished successfully")
+        else:
+            self._show_status(f"Simulation failed (exit code: {exit_code})", 5000)
+        # release the runner reference now that simulation is complete
+        self._runner = None
+
+    def _on_menu_run_simulation(self):
+        # prompt user for parameters if none are configured
+        if self._simulation_parameters is None:
+            self._on_menu_configure_simulation()
+        # return early if user cancelled parameter configuration
+        if self._simulation_parameters is None:
+            return
+        # construct the full netlist with the user-selected directive
+        directive = self._simulation_parameters.to_xyce_directive()
+        # insert directive before .END
+        netlist = self._setup_netlist().replace(".END", f"{directive}\n.END")
+        # log simulation netlist
+        logger.info("Running simulation with netlist:\n%s", netlist)
+        # launch simulation and store the runner reference
+        try:
+            self._runner = run_xyce_simulation(self._plugin_config, netlist)
+            # wire signal handlers for UI progress updates
+            self._runner.started.connect(self._on_simulation_started)
+            self._runner.stdout_received.connect(self._on_stdout_received)
+            self._runner.stderr_received.connect(self._on_stderr_received)
+            self._runner.finished.connect(self._on_simulation_finished)
+        except ValueError as e:
+            self._show_status(str(e), 5000)
+            logger.error("Simulation startup failed: %s", e)
+
     def _on_menu_configure_simulation(self):
         # open the simulation dialog and wait for user input
         dialog = SimulationDialog(self, initial_parameters=self._simulation_parameters)
@@ -248,10 +341,7 @@ class MainWindow(QMainWindow):
         # log a netlist-ready directive so simulation wiring can reuse it later
         logger.info("Configured Xyce simulation directive: %s", simulation_parameters.to_xyce_directive())
         # show immediate confirmation in the status bar for the user
-        self.statusBar().showMessage("Simulation parameters updated", 3000)
-
-    def _on_menu_run_simulation(self):
-        ...
+        # self.statusBar().showMessage("Simulation parameters updated", 3000)
 
     def _on_menu_configuration(self):
         # open plugin configuration dialog with current values
