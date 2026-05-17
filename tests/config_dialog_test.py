@@ -2,27 +2,20 @@ import os
 import sys
 import tempfile
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-# config_dialog.py uses bare intra-package imports; expose the plugin dir
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "plugin"))
-# alias bare module names to the package versions before importing plugin modules
-import plugin.plugin_config  # noqa: F401
-sys.modules.setdefault("plugin_config", sys.modules["plugin.plugin_config"])
-
-from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 from PySide6.QtQuick import QQuickView
 from PySide6.QtWidgets import QApplication, QDialog
 
-from plugin.config_dialog import ConfigDialog
-from plugin.plugin_config import PluginConfig
+from config_dialog import ConfigDialog
+from plugin_config import PluginConfig
+
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
 
 def _make_dialog(initial_config: PluginConfig | None = None) -> ConfigDialog:
+
     """Create a ConfigDialog bypassing QML setup, with a mock QML root."""
     dialog = ConfigDialog.__new__(ConfigDialog)
     QDialog.__init__(dialog)
@@ -38,20 +31,20 @@ def _make_dialog_with_accept(initial_config: PluginConfig | None = None) -> Conf
     return dialog
 
 
-class TestConfigDialogConstruction(TestCase):
+class TestConfigDialogConstruction:
 
     def test_dialog_can_be_instantiated(self):
         # act — full construction path
-        dialog = ConfigDialog()
+        dialog = ConfigDialog(None)
         # assert
-        self.assertIsInstance(dialog, ConfigDialog)
+        assert isinstance(dialog, ConfigDialog)
         dialog.reject()
 
     def test_dialog_result_is_none_initially(self):
         # act
-        dialog = ConfigDialog()
+        dialog = ConfigDialog(None)
         # assert
-        self.assertIsNone(dialog._result)
+        assert dialog._result is None
         dialog.reject()
 
     def test_on_qml_ready_skips_when_not_ready(self):
@@ -64,7 +57,7 @@ class TestConfigDialogConstruction(TestCase):
         dialog._root.setProperty.assert_not_called()
 
 
-class TestConfigDialogOnQmlReady(TestCase):
+class TestConfigDialogOnQmlReady:
 
     def test_on_qml_ready_populates_path_field(self):
         # arrange
@@ -101,12 +94,12 @@ class TestConfigDialogOnQmlReady(TestCase):
         mock_root.cancelRequested.connect.assert_called_once()
 
 
-class TestConfigDialogOnBrowseRequested(TestCase):
+class TestConfigDialogOnBrowseRequested:
 
     def test_on_browse_updates_path_field(self):
         # arrange
         dialog = _make_dialog()
-        with patch("plugin.config_dialog.QFileDialog.getOpenFileName", return_value=("/usr/bin/Xyce", "")):
+        with patch("config_dialog.QFileDialog.getOpenFileName", return_value=("/usr/bin/Xyce", "")):
             # act
             dialog._on_browse_requested()
         # assert
@@ -115,7 +108,7 @@ class TestConfigDialogOnBrowseRequested(TestCase):
     def test_on_browse_clears_error_text_after_selection(self):
         # arrange
         dialog = _make_dialog()
-        with patch("plugin.config_dialog.QFileDialog.getOpenFileName", return_value=("/usr/bin/Xyce", "")):
+        with patch("config_dialog.QFileDialog.getOpenFileName", return_value=("/usr/bin/Xyce", "")):
             # act
             dialog._on_browse_requested()
         # assert
@@ -124,14 +117,14 @@ class TestConfigDialogOnBrowseRequested(TestCase):
     def test_on_browse_no_op_when_user_cancels(self):
         # arrange
         dialog = _make_dialog()
-        with patch("plugin.config_dialog.QFileDialog.getOpenFileName", return_value=("", "")):
+        with patch("config_dialog.QFileDialog.getOpenFileName", return_value=("", "")):
             # act
             dialog._on_browse_requested()
         # assert — no setProperty calls (user canceled)
         dialog._root.setProperty.assert_not_called()
 
 
-class TestConfigDialogOnSubmit(TestCase):
+class TestConfigDialogOnSubmit:
 
     def test_on_submit_rejects_empty_path(self):
         # arrange
@@ -172,13 +165,13 @@ class TestConfigDialogOnSubmit(TestCase):
             exec_path = f.name
         os.chmod(exec_path, 0o755)
         try:
-            with patch("plugin.config_dialog.PluginConfig.save"):
+            with patch("config_dialog.PluginConfig.save"):
                 # act
                 dialog._on_submit(exec_path)
             # assert
             dialog.accept.assert_called_once()
-            self.assertIsInstance(dialog._result, PluginConfig)
-            self.assertEqual(dialog._result.xyce_executable_path, exec_path)
+            assert isinstance(dialog._result, PluginConfig)
+            assert dialog._result.xyce_executable_path == exec_path
         finally:
             os.unlink(exec_path)
 
@@ -189,11 +182,11 @@ class TestConfigDialogOnSubmit(TestCase):
             exec_path = f.name
         os.chmod(exec_path, 0o755)
         try:
-            with patch("plugin.config_dialog.PluginConfig.save"):
+            with patch("config_dialog.PluginConfig.save"):
                 # act
                 dialog._on_submit(f"  {exec_path}  ")
             # assert — whitespace stripped
-            self.assertEqual(dialog._result.xyce_executable_path, exec_path)
+            assert dialog._result.xyce_executable_path == exec_path
         finally:
             os.unlink(exec_path)
 
@@ -204,7 +197,7 @@ class TestConfigDialogOnSubmit(TestCase):
             exec_path = f.name
         os.chmod(exec_path, 0o755)
         try:
-            with patch("plugin.config_dialog.PluginConfig.save") as mock_save:
+            with patch("config_dialog.PluginConfig.save") as mock_save:
                 # act
                 dialog._on_submit(exec_path)
             # assert
@@ -213,7 +206,7 @@ class TestConfigDialogOnSubmit(TestCase):
             os.unlink(exec_path)
 
 
-class TestConfigDialogGetConfig(TestCase):
+class TestConfigDialogGetConfig:
 
     def test_get_config_returns_none_when_rejected(self):
         # arrange
@@ -222,7 +215,7 @@ class TestConfigDialogGetConfig(TestCase):
             # act
             result = dialog.get_config()
         # assert
-        self.assertIsNone(result)
+        assert result is None
 
     def test_get_config_returns_result_when_accepted(self):
         # arrange
@@ -232,5 +225,5 @@ class TestConfigDialogGetConfig(TestCase):
             # act
             result = dialog.get_config()
         # assert
-        self.assertIsInstance(result, PluginConfig)
-        self.assertEqual(result.xyce_executable_path, "/usr/bin/Xyce")
+        assert isinstance(result, PluginConfig)
+        assert result.xyce_executable_path == "/usr/bin/Xyce"
