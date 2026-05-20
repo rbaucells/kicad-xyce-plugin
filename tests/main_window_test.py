@@ -8,7 +8,8 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 
 from kicad_icons import load_kicad_icons
 from main_window import MainWindow
-from plugin_config import PluginConfig
+from netlist_parser import NetlistTopology
+from config.plugin_config import PluginConfig
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
@@ -21,12 +22,25 @@ def _make_window() -> MainWindow:
     QMainWindow.__init__(window)
     window._root = MagicMock()
     window._status_timer = MagicMock()
+    window._kicad_client = MagicMock()
     window._plugin_config = PluginConfig.default()
     window._runner = None
+    window._netlist = None
+    window._netlist_file_path = None
+    window._topology = None
     window._simulation_parameters = None
     window._simulation_performed = False
     window._simulation_output_action = None
+    window._simulation_config_action = None
+    window._simulation_run_action = None
+    window._show_netlist_action = None
     window._charts = []
+    window._abscissa = None
+    window._step_information = None
+    window._expression_manager = None
+    window._abscissa_scale = MagicMock()
+    window._decimate_target = 9600
+    window._initial_selected_steps = None
     return window
 
 
@@ -43,13 +57,15 @@ class TestMainWindowSizeHint:
 
 class TestMainWindowSetupNetlist:
 
-    def test_setup_netlist_returns_string_containing_end(self):
+    def test_extract_schematic_netlist_returns_topology_in_plugin_mode(self):
         # arrange
         window = _make_window()
         # act
-        result = window._setup_netlist()
+        netlist, _, topology = window._extract_schematic_netlist()
         # assert
-        assert ".END" in result
+        assert isinstance(netlist, str)
+        assert isinstance(topology, NetlistTopology)
+        assert len(topology.devices) > 0
 
 
 class TestMainWindowShowStatus:
@@ -130,7 +146,7 @@ class TestMainWindowOnSimulationStarted:
         # arrange
         window = _make_window()
         # act
-        window._on_simulation_started("/tmp/test.cir", "/tmp/test.raw")
+        window._on_simulation_started("/tmp/test.cir")
         # assert
         window._root.setProperty.assert_any_call("logVisible", True)
 
@@ -141,7 +157,7 @@ class TestMainWindowOnStdoutReceived:
         # arrange
         window = _make_window()
         received: list[str] = []
-        window.logAppendRequested.connect(received.append)
+        window.log_append_requested.connect(received.append)
         # act
         window._on_stdout_received("xyce output line")
         # assert
@@ -154,7 +170,7 @@ class TestMainWindowOnStderrReceived:
         # arrange
         window = _make_window()
         received: list[str] = []
-        window.logAppendRequested.connect(received.append)
+        window.log_append_requested.connect(received.append)
         # act
         window._on_stderr_received("error text")
         # assert
@@ -167,7 +183,7 @@ class TestMainWindowOnSimulationFinished:
         # arrange
         window = _make_window()
         # act
-        window._on_simulation_finished(0, 0, True, "/tmp/out.raw")
+        window._on_simulation_finished(0, 0, True)
         # assert
         window._root.setProperty.assert_any_call("statusText", "Simulation canceled")
         assert window._runner is None
@@ -176,7 +192,7 @@ class TestMainWindowOnSimulationFinished:
         # arrange
         window = _make_window()
         # act
-        window._on_simulation_finished(0, 0, False, "/tmp/out.raw")
+        window._on_simulation_finished(0, 0, False)
         # assert
         window._root.setProperty.assert_any_call("statusText", "Simulation finished successfully")
         assert window._runner is None
@@ -185,7 +201,7 @@ class TestMainWindowOnSimulationFinished:
         # arrange
         window = _make_window()
         # act
-        window._on_simulation_finished(1, 0, False, "/tmp/out.raw")
+        window._on_simulation_finished(1, 0, False)
         # assert
         window._root.setProperty.assert_any_call("statusText", "Simulation failed (exit code: 1)")
         assert window._runner is None
@@ -200,7 +216,7 @@ class TestMainWindowOnMenuRunSimulation:
         window._on_menu_configure_simulation = MagicMock()
         # mock parse_netlist to return empty directives so simulation parameters remain None
         with patch("main_window.parse_netlist") as mock_parse:
-            mock_parse.return_value = MagicMock(directives=[])
+            mock_parse.return_value = ("", MagicMock(directives=[]))
             # act
             window._on_menu_run_simulation()
             # assert
@@ -231,16 +247,62 @@ class TestMainWindowOnMenuRunSimulation:
         assert window._runner is None
         window._root.setProperty.assert_any_call("statusText", "Invalid executable")
 
+    def test_uses_stored_topology_in_standalone_mode(self):
+        # arrange
+        window = _make_window()
+        window._kicad_client = None
+        window._netlist = "* test\nR1 1 0 1k\n.OP\n.END"
+        window._topology = MagicMock(directives=[])
+        window._simulation_parameters = MagicMock()
+        window._simulation_parameters.to_xyce_directive.return_value = ".OP"
+        with patch("main_window.run_xyce_simulation") as mock_run:
+            mock_run.return_value = MagicMock()
+            # act
+            window._on_menu_run_simulation()
+        # assert
+        assert window._runner is not None
+
+
+class TestMainWindowOnMenuShowNetlist:
+
+    def test_shows_netlist_dialog_in_plugin_mode(self):
+        # arrange
+        window = _make_window()
+        window._simulation_parameters = MagicMock()
+        window._simulation_parameters.to_xyce_directive.return_value = ".OP"
+        with patch("main_window.NetlistViewerDialog") as mock_dialog_cls:
+            mock_dialog_cls.return_value.exec.return_value = None
+            # act
+            window._on_menu_show_netlist()
+        # assert
+        mock_dialog_cls.assert_called_once()
+
+    def test_shows_netlist_dialog_in_standalone_mode(self):
+        # arrange
+        window = _make_window()
+        window._kicad_client = None
+        window._netlist = "* test\nR1 1 0 1k\n.OP\n.END"
+        window._topology = MagicMock(directives=[])
+        window._simulation_parameters = MagicMock()
+        window._simulation_parameters.to_xyce_directive.return_value = ".OP"
+        with patch("main_window.NetlistViewerDialog") as mock_dialog_cls:
+            mock_dialog_cls.return_value.exec.return_value = None
+            # act
+            window._on_menu_show_netlist()
+        # assert
+        mock_dialog_cls.assert_called_once()
+
 
 class TestMainWindowOnMenuConfigureSimulation:
 
     def test_keeps_existing_parameters_when_dialog_canceled(self):
         # arrange
         window = _make_window()
-        with patch("main_window.SimulationDialog") as mock_dialog_cls:
-            mock_dialog_cls.return_value.get_parameters.return_value = None
-            # act
-            window._on_menu_configure_simulation()
+        with patch.object(window, "_extract_schematic_netlist", return_value=("", MagicMock(), MagicMock(directives=[]))):
+            with patch("main_window.SimulationParametersDialog") as mock_dialog_cls:
+                mock_dialog_cls.return_value.get_parameters.return_value = None
+                # act
+                window._on_menu_configure_simulation()
         # assert
         assert window._simulation_parameters is None
 
@@ -249,9 +311,25 @@ class TestMainWindowOnMenuConfigureSimulation:
         window = _make_window()
         mock_params = MagicMock()
         mock_params.to_xyce_directive.return_value = ".TRAN 1u 1m"
-        with patch("main_window.SimulationDialog") as mock_dialog_cls:
-            mock_dialog_cls.Accepted = 1
-            mock_dialog_cls.return_value.exec.return_value = 1
+        with patch.object(window, "_extract_schematic_netlist", return_value=("", MagicMock(), MagicMock(directives=[]))):
+            with patch("main_window.SimulationParametersDialog") as mock_dialog_cls:
+                mock_dialog_cls.DialogCode.Accepted = "accepted"
+                mock_dialog_cls.return_value.exec.return_value = "accepted"
+                mock_dialog_cls.return_value.get_parameters.return_value = mock_params
+                # act
+                window._on_menu_configure_simulation()
+        # assert
+        assert window._simulation_parameters == mock_params
+
+    def test_uses_stored_topology_in_standalone_mode(self):
+        # arrange
+        window = _make_window()
+        window._kicad_client = None
+        window._topology = MagicMock(directives=[])
+        mock_params = MagicMock()
+        with patch("main_window.SimulationParametersDialog") as mock_dialog_cls:
+            mock_dialog_cls.DialogCode.Accepted = "accepted"
+            mock_dialog_cls.return_value.exec.return_value = "accepted"
             mock_dialog_cls.return_value.get_parameters.return_value = mock_params
             # act
             window._on_menu_configure_simulation()
@@ -265,7 +343,7 @@ class TestMainWindowOnMenuConfiguration:
         # arrange
         window = _make_window()
         original_config = window._plugin_config
-        with patch("main_window.ConfigDialog") as mock_dialog_cls:
+        with patch("main_window.PluginConfigDialog") as mock_dialog_cls:
             mock_dialog_cls.return_value.get_config.return_value = None
             # act
             window._on_menu_configuration()
@@ -277,7 +355,9 @@ class TestMainWindowOnMenuConfiguration:
         window = _make_window()
         new_config = MagicMock()
         new_config.xyce_executable_path = "/usr/bin/Xyce"
-        with patch("main_window.ConfigDialog") as mock_dialog_cls:
+        with patch("main_window.PluginConfigDialog") as mock_dialog_cls:
+            mock_dialog_cls.DialogCode.Accepted = "accepted"
+            mock_dialog_cls.return_value.exec.return_value = "accepted"
             mock_dialog_cls.return_value.get_config.return_value = new_config
             # act
             window._on_menu_configuration()
@@ -298,8 +378,71 @@ class TestMainWindowOnMenuOpenFile:
         # arrange
         window = _make_window()
         with patch("main_window.QFileDialog.getOpenFileName", return_value=("/tmp/test.cir", "")):
-            # act / assert — no exception raised
+            with patch("main_window.Path.read_text", return_value="* test\n.END"):
+                # act / assert — no exception raised
+                window._on_menu_open_file()
+
+    def test_stores_netlist_content_when_netlist_file_selected(self):
+        # arrange
+        window = _make_window()
+        with patch("main_window.QFileDialog.getOpenFileName", return_value=("/tmp/test.cir", "")):
+            with patch("main_window.Path.read_text", return_value="* test\n.END\n"):
+                # act
+                window._on_menu_open_file()
+        # assert
+        assert window._netlist == "* test\n.END\n"
+
+    def test_does_not_store_netlist_for_raw_file(self):
+        # arrange
+        window = _make_window()
+        with patch("main_window.QFileDialog.getOpenFileName", return_value=("/tmp/test.raw", "")):
+            # act
             window._on_menu_open_file()
+        # assert
+        assert window._netlist is None
+
+    def test_enables_simulation_actions_when_netlist_file_selected(self):
+        # arrange
+        window = _make_window()
+        window._simulation_config_action = MagicMock()
+        window._simulation_run_action = MagicMock()
+        window._show_netlist_action = MagicMock()
+        with patch("main_window.QFileDialog.getOpenFileName", return_value=("/tmp/test.cir", "")):
+            with patch("main_window.Path.read_text", return_value="* test\n.END"):
+                # act
+                window._on_menu_open_file()
+        # assert
+        window._simulation_config_action.setEnabled.assert_called_once_with(True)
+        window._simulation_run_action.setEnabled.assert_called_once_with(True)
+        window._show_netlist_action.setEnabled.assert_called_once_with(True)
+
+    def test_does_not_enable_simulation_actions_when_raw_file_selected(self):
+        # arrange
+        window = _make_window()
+        window._simulation_config_action = MagicMock()
+        window._simulation_run_action = MagicMock()
+        window._show_netlist_action = MagicMock()
+        with patch("main_window.QFileDialog.getOpenFileName", return_value=("/tmp/test.raw", "")):
+            # act
+            window._on_menu_open_file()
+        # assert
+        window._simulation_config_action.setEnabled.assert_not_called()
+        window._simulation_run_action.setEnabled.assert_not_called()
+        window._show_netlist_action.setEnabled.assert_not_called()
+
+    def test_does_not_enable_simulation_actions_when_no_file_selected(self):
+        # arrange
+        window = _make_window()
+        window._simulation_config_action = MagicMock()
+        window._simulation_run_action = MagicMock()
+        window._show_netlist_action = MagicMock()
+        with patch("main_window.QFileDialog.getOpenFileName", return_value=("", "")):
+            # act
+            window._on_menu_open_file()
+        # assert
+        window._simulation_config_action.setEnabled.assert_not_called()
+        window._simulation_run_action.setEnabled.assert_not_called()
+        window._show_netlist_action.setEnabled.assert_not_called()
 
 
 class TestMainWindowViewSimulationOutput:
@@ -309,7 +452,7 @@ class TestMainWindowViewSimulationOutput:
         window = _make_window()
         window._simulation_output_action = MagicMock()
         # act
-        window._on_simulation_started("/tmp/test.cir", "/tmp/test.raw")
+        window._on_simulation_started("/tmp/test.cir")
         # assert
         assert window._simulation_performed is True
         window._simulation_output_action.setEnabled.assert_called_with(True)
@@ -324,14 +467,6 @@ class TestMainWindowViewSimulationOutput:
         # assert
         window._root.setProperty.assert_called_with("logVisible", True)
 
-    def test_populate_charts_adds_one_chart(self):
-        # arrange
-        window = _make_window()
-        # act
-        window._populate_charts()
-        # assert
-        window._root.addChart.assert_called_once()
-
 
 class TestMainWindowAddChart:
 
@@ -339,6 +474,7 @@ class TestMainWindowAddChart:
         # arrange
         window = _make_window()
         # act
-        window._add_chart("", [])
+        with patch("main_window.Chart"):
+            window._add_chart([])
         # assert
         window._root.addChart.assert_called_once()

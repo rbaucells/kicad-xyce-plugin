@@ -8,6 +8,32 @@
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "python.terminal.activateEnvironment": true,
   "chat.tools.terminal.autoApprove": {
-    "git remote": true
+    "git remote": true,
+    ".venv/bin/flake8": true,
+    "/^python -m pytest tests/simulation_parameters/transient_simulation_parameters_test\\.py --tb=short 2>&1 \\| tail -40$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^python -m pytest tests/ --tb=no -q 2>&1 \\| tail -30$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^source \\.venv/bin/activate && python -m pytest tests/ --tb=no -q 2>&1 \\| tail -30$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "pytest": true,
+    "/^source \\.venv/bin/activate && pytest --collect-only -q tests/window_test\\.py && pytest --collect-only tests --rootdir=\\.$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^source \\.venv/bin/activate && pytest tests/simulation_parameters/ -q -x 2>&1 \\| tail -30$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^source \\.venv/bin/activate && pytest tests/simulation_parameters/ -q -x 2>&1 \\| tail -40$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   }
 }

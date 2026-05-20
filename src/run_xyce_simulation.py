@@ -1,30 +1,29 @@
 import logging
 import os
 import tempfile
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
-from plugin_config import PluginConfig
+from config.plugin_config import PluginConfig
 
 logger = logging.getLogger(__name__)
 
 
 class XyceSimulationRunner(QObject):
 
-    started = Signal(str, str)
+    started = Signal(str)
     stdout_received = Signal(str)
     stderr_received = Signal(str)
     process_error = Signal(int, str)
-    finished = Signal(int, int, bool, str)
+    finished = Signal(int, int, bool)
 
-    def __init__(self, program_path: str, netlist_file_path: str, output_file_path: str):
+    def __init__(self, program_path: str, working_directory: Path, netlist_file_path: str):
         super().__init__()
         # keep the external executable path for process launch
         self._program_path = program_path
         # keep the persisted netlist file path for execution and cleanup
         self._netlist_file_path = netlist_file_path
-        # keep the output file path passed to Xyce
-        self._output_file_path = output_file_path
         # keep cancellation state for finished event reporting
         self._was_canceled = False
         # keep a guard flag so cleanup and final signals run once
@@ -35,6 +34,8 @@ class XyceSimulationRunner(QObject):
         self._stderr_buffer = ""
         # create process object parented to this runner for lifecycle safety
         self._process = QProcess(self)
+        # set the working directory for the process to ensure relative includes and file operations work as expected
+        self._process.setWorkingDirectory(str(working_directory))
         # keep stdout and stderr separate so caller can render both streams
         self._process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         # route process started notification to the typed runner signal
@@ -52,13 +53,9 @@ class XyceSimulationRunner(QObject):
     def netlist_file_path(self) -> str:
         return self._netlist_file_path
 
-    @property
-    def output_file_path(self) -> str:
-        return self._output_file_path
-
     def start(self) -> None:
         # pass output file path so Xyce writes binary results deterministically
-        arguments = ["-r", self._output_file_path, self._netlist_file_path]
+        arguments = [self._netlist_file_path]
         # log process invocation details for diagnostics
         logger.info("Starting Xyce process: %s %s", self._program_path, " ".join(arguments))
         # configure the external executable selected by plugin configuration
@@ -112,7 +109,7 @@ class XyceSimulationRunner(QObject):
 
     def _on_started(self) -> None:
         # notify caller that process start succeeded and temp files are in use
-        self.started.emit(self._netlist_file_path, self._output_file_path)
+        self.started.emit(self._netlist_file_path)
 
     def _on_ready_read_standard_output(self) -> None:
         # decode available stdout bytes using replacement for robustness
@@ -158,7 +155,7 @@ class XyceSimulationRunner(QObject):
         # remove temporary netlist file now that Xyce no longer needs it
         self._cleanup_netlist_file()
         # emit terminal process state including cancellation and output path
-        self.finished.emit(exit_code, exit_status.value, self._was_canceled, self._output_file_path)
+        self.finished.emit(exit_code, exit_status.value, self._was_canceled)
 
     def _cleanup_netlist_file(self) -> None:
         # skip filesystem operations when netlist path is unavailable
@@ -171,7 +168,7 @@ class XyceSimulationRunner(QObject):
         os.unlink(self._netlist_file_path)
 
 
-def run_xyce_simulation(plugin_config: PluginConfig, netlist: str) -> XyceSimulationRunner:
+def run_xyce_simulation(plugin_config: PluginConfig, netlist_file_path: Path, netlist: str) -> XyceSimulationRunner:
     # fail fast when executable path is missing or not runnable
     if not plugin_config.is_xyce_executable_valid():
         raise ValueError("Configured Xyce executable path is invalid")
@@ -179,16 +176,10 @@ def run_xyce_simulation(plugin_config: PluginConfig, netlist: str) -> XyceSimula
     if not netlist.strip():
         raise ValueError("Netlist content cannot be empty")
     # create a persistent temporary netlist file used by the external process
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".cir", prefix="kicad_xyce_", delete=False) as netlist_file:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".cir", prefix="xyce_", delete=False) as netlist_file:
         # write netlist text exactly as provided by the caller
         netlist_file.write(netlist)
         # capture path for process invocation and later cleanup
-        netlist_file_path = netlist_file.name
-    # allocate a deterministic temporary output path for Xyce raw data
-    output_fd, output_file_path = tempfile.mkstemp(prefix="kicad_xyce_", suffix=".raw")
-    # close the file descriptor because Xyce will write this path itself
-    os.close(output_fd)
-    # create the asynchronous runner that owns process and stream wiring
-    runner = XyceSimulationRunner(plugin_config.xyce_executable_path, netlist_file_path, output_file_path)
-    # return runner to caller for signal subscription and cancellation
-    return runner
+        netlist_temp_file_path = netlist_file.name
+    # create the asynchronous runner
+    return XyceSimulationRunner(plugin_config.xyce_executable_path, netlist_file_path.parent, netlist_temp_file_path)

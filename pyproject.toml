@@ -15,13 +15,22 @@ Homepage = "https://github.com/spice-projects/kicad-xyce-plugin"
 Repository = "https://github.com/spice-projects/kicad-xyce-plugin"
 Issues = "https://github.com/spice-projects/kicad-xyce-plugin/issues"
 
+[project.scripts]
+xyce-simulator = "xyce_simulator.run_simulator:main"
+
+[tool.hatch.build.targets.wheel]
+# xyce_simulator/ is a temporary directory created by the CI wheel build step.
+# It is a renamed copy of src/ with a sys.path shim injected into __init__.py
+# to preserve flat intra-module imports. It is never committed to the repo.
+packages = ["xyce_simulator"]
+
 [tool.hatch.build.targets.kicad-package]
 name = "Xyce Simulation Plugin for KiCad"
 description = "Xyce Simulation Plugin for KiCad"
 description_full = "Xyce Simulation Plugin for KiCad - TODO: change this to a more detailed description"
 identifier = "com.github.spice-projects.kicad-xyce-plugin"
 status = "development"
-kicad_version = "10.99"
+kicad_version = "10.99.0"
 icon = "plugin-icon-48x48.png"
 download_url = "https://spice-projects.github.io/kicad-xyce-plugin/{zip_name}"
 sources = ["src"]
