@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from netlist_parser import NetlistTopology
 from .fft_parameters import FftParameters
 from .four_parameters import FourParameters
+from .measure_parameters import MeasureEntry
 from .print_parameters import PrintParameters
+from .sens_parameter import SensParameter
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,8 @@ class TransientSimulationParameters:
     print_parameters: PrintParameters | None = None
     fft_parameters: tuple[FftParameters, ...] = ()
     four_parameters: tuple[FourParameters, ...] = ()
+    measure_parameters: tuple[MeasureEntry, ...] = ()
+    sensitivity: SensParameter | None = None
 
     @classmethod
     def from_xyce_directives(cls, directives: list[str]) -> "TransientSimulationParameters" | None:
@@ -44,6 +48,8 @@ class TransientSimulationParameters:
         fft_parameters: list[FftParameters] = []
         # init four parameters
         four_parameters: list[FourParameters] = []
+        # init measure parameters
+        measure_parameters: list[MeasureEntry] = []
         # flag indicating whether a valid directive was found
         found = False
         # parse directives
@@ -60,7 +66,7 @@ class TransientSimulationParameters:
                 # parse the print statement from the directive
                 print_statement = PrintParameters.from_xyce_statement(directive)
                 # retain transient print parameters when found
-                if print_statement and print_statement.print_type == "TRAN":
+                if print_statement and print_statement.print_type in ("TRAN", "TRANADJOINT"):
                     # store the parsed print parameters
                     print_parameters = print_statement
                     # next
@@ -83,6 +89,16 @@ class TransientSimulationParameters:
                 if four_statement:
                     # append the parsed four parameters
                     four_parameters.append(four_statement)
+                # next
+                continue
+            # parse measure directives
+            if cmd in (".MEASURE", ".MEAS"):
+                # parse the measure statement from the directive
+                measure_statement = MeasureEntry.from_xyce_statement(directive)
+                # retain measure parameters when found and analysis type matches
+                if measure_statement and measure_statement.analysis_type in ("TRAN", "TRAN_CONT"):
+                    # append the parsed measure parameters
+                    measure_parameters.append(measure_statement)
                 # next
                 continue
             # handle preprocess replaceground
@@ -131,8 +147,10 @@ class TransientSimulationParameters:
             # assign optional step ceiling (position 4)
             if len(positional) >= 2:
                 step_ceiling_value = positional[1]
+        # parse sensitivity as a companion directive before analysis detection
+        sensitivity = SensParameter.from_xyce_directives(directives)
         # return instance if a valid directive was found
-        return cls(initial_step_value=initial_step_value, final_time_value=final_time_value, start_time_value=start_time_value, step_ceiling_value=step_ceiling_value, op_keyword=op_keyword, schedule_points=tuple(schedule_points), replace_ground=replace_ground, print_parameters=print_parameters, fft_parameters=tuple(fft_parameters), four_parameters=tuple(four_parameters)) if found else None
+        return cls(initial_step_value=initial_step_value, final_time_value=final_time_value, start_time_value=start_time_value, step_ceiling_value=step_ceiling_value, op_keyword=op_keyword, schedule_points=tuple(schedule_points), replace_ground=replace_ground, print_parameters=print_parameters, fft_parameters=tuple(fft_parameters), four_parameters=tuple(four_parameters), measure_parameters=tuple(measure_parameters), sensitivity=sensitivity) if found else None
 
     def to_xyce_directives(self, topology: NetlistTopology | None = None) -> list[str]:
         # prepend replaceground preprocessor directive when enabled
@@ -140,9 +158,12 @@ class TransientSimulationParameters:
         # start with the transient analysis directive
         lines = [self._to_xyce_directive()]
         # append transient print directive when configured
-        if self.print_parameters and self.print_parameters.print_type == "TRAN":
+        if self.print_parameters:
             # append print statement
             lines.append(self.print_parameters.to_xyce_statement())
+        # append sensitivity directives when configured
+        if self.sensitivity is not None:
+            lines.extend(self.sensitivity.to_xyce_directives(topology))
         # append fft directives
         for fft in self.fft_parameters:
             # append fft statement
@@ -151,6 +172,10 @@ class TransientSimulationParameters:
         for four in self.four_parameters:
             # append four statement
             lines.append(four.to_xyce_statement())
+        # append measure directives
+        for measure in self.measure_parameters:
+            # append measure statement
+            lines.append(measure.to_xyce_statement())
         # return the full directive list
         return preprocess + lines
 

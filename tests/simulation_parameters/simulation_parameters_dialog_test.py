@@ -1,14 +1,14 @@
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtWidgets import QApplication, QDialog
 from PySide6.QtQuick import QQuickView
 
 from netlist_parser import Device, NetlistTopology
-from simulation_parameters import AcSimulationParameters, DCSimulationParameters, HbSimulationParameters, LinSimulationParameters, NoiseSimulationParameters, OpSimulationParameters, PrintParameters, SimulationParametersDialog, TransientSchedulePoint, TransientSimulationParameters
+from simulation_parameters import AcSimulationParameters, DCSimulationParameters, HbSimulationParameters, IcEntry, LinSimulationParameters, NoiseSimulationParameters, OpSimulationParameters, PrintParameters, SimulationConfig, SimulationParametersDialog, StepParameters, TransientSchedulePoint, TransientSimulationParameters
 
-from simulation_parameters.simulation_parameters_dialog import _validate_device_name
+from simulation_parameters.noise_panel import _validate_device_name
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
@@ -18,9 +18,47 @@ def _make_dialog(initial_parameters=None) -> SimulationParametersDialog:
     dialog = SimulationParametersDialog.__new__(SimulationParametersDialog)
     # call QDialog.__init__ without triggering the full SimulationParametersDialog.__init__
     QDialog.__init__(dialog)
+    # wrap parameters in SimulationConfig if they are individual analysis types
+    if initial_parameters is not None and not isinstance(initial_parameters, SimulationConfig):
+        initial_parameters = SimulationConfig(analysis=initial_parameters, step=StepParameters())
+    elif initial_parameters is None:
+        initial_parameters = SimulationConfig(analysis=None, step=StepParameters())
     dialog._initial_parameters = initial_parameters
     dialog._result = None
     dialog._root = MagicMock()
+
+    # Bypassing _on_qml_ready which is not called in unit tests
+    from simulation_parameters.op_panel import OpPanel
+    from simulation_parameters.tran_panel import TranPanel
+    from simulation_parameters.dc_panel import DcPanel
+    from simulation_parameters.ac_panel import AcPanel
+    from simulation_parameters.sensitivity_section import SensitivitySection
+    from simulation_parameters.noise_panel import NoisePanel
+    from simulation_parameters.hb_panel import HbPanel
+    from simulation_parameters.lin_panel import LinPanel
+
+    dialog._op_panel = OpPanel(dialog._root)
+    dialog._tran_panel = TranPanel(dialog._root)
+    dialog._dc_panel = DcPanel(dialog._root)
+    dialog._ac_panel = AcPanel(dialog._root)
+    dialog._sensitivity_section = SensitivitySection(dialog._root)
+    dialog._noise_panel = NoisePanel(dialog._root)
+    dialog._hb_panel = HbPanel(dialog._root)
+    dialog._lin_panel = LinPanel(dialog._root)
+
+    # mock property values for _get_current_step_parameters
+    properties = {
+        "stepEnabled": False,
+        "stepSweepModeIndex": 0,
+        "stepVariable": "",
+        "stepStartValue": "",
+        "stepStopValue": "",
+        "stepStepValue": "",
+        "stepPointsValue": "",
+        "stepListValuesText": "",
+        "stepDataTableName": ""
+    }
+    dialog._root.property.side_effect = lambda name: properties.get(name)
     dialog._has_bjt_devices = False
     dialog._has_fet_devices = False
     return dialog
@@ -36,13 +74,13 @@ class TestSimulationParametersDialogConstruction:
 
     def test_dialog_can_be_instantiated(self):
         # act
-        dialog = SimulationParametersDialog(None, OpSimulationParameters())
+        dialog = SimulationParametersDialog(None, SimulationConfig(analysis=OpSimulationParameters(), step=StepParameters()))
         # assert
         assert isinstance(dialog, SimulationParametersDialog)
 
     def test_dialog_result_is_none_initially(self):
         # act
-        dialog = SimulationParametersDialog(None, OpSimulationParameters())
+        dialog = SimulationParametersDialog(None, SimulationConfig(analysis=OpSimulationParameters(), step=StepParameters()))
         # assert
         assert dialog._result is None
 
@@ -222,10 +260,31 @@ class TestSimulationParametersDialogOnSubmitOP:
         accepted = []
         dialog.accept = lambda: accepted.append(True)
         # act
-        dialog._on_submit_op(False, False, False, False, False, False, "", "", "", False, "NODESET", "", "", False)
+        dialog._on_submit_op(False, False, False, False, False, False, "", "", "", False, "NODESET", "", "", "", False)
         # assert
-        assert isinstance(dialog._result, OpSimulationParameters)
+        assert isinstance(dialog._result.analysis, OpSimulationParameters)
         assert len(accepted) == 1
+
+    def test_on_submit_op_parses_initial_conditions(self):
+        # arrange
+        dialog = _make_dialog()
+        accepted = []
+        dialog.accept = lambda: accepted.append(True)
+        # act
+        dialog._on_submit_op(False, False, False, False, False, False, "", "", "", False, "NODESET", "", "V(out)=1.0 V(in)=0", "", False)
+        # assert
+        assert isinstance(dialog._result.analysis, OpSimulationParameters)
+        assert dialog._result.analysis.ic_entries == (IcEntry(node="out", voltage="1.0"), IcEntry(node="in", voltage="0"))
+        assert len(accepted) == 1
+
+    def test_apply_op_parameters_restores_initial_conditions(self):
+        # arrange
+        params = OpSimulationParameters(ic_entries=(IcEntry(node="out", voltage="1.0"),), replace_ground=False)
+        dialog = _make_dialog()
+        # act
+        dialog._apply_op_parameters(params)
+        # assert
+        dialog._root.setProperty.assert_any_call("opInitialConditionEntries", "V(out)=1.0")
 
 
 class TestSimulationParametersDialogOnSubmitTransient:
@@ -234,38 +293,47 @@ class TestSimulationParametersDialogOnSubmitTransient:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
-        assert isinstance(dialog._result, TransientSimulationParameters)
+        assert isinstance(dialog._result.analysis, TransientSimulationParameters)
 
     def test_result_has_correct_values(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("2u", "2m", "100n", "10u", "NOOP", False, "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("2u", "2m", "100n", "10u", "NOOP", False, "", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         result = dialog._result
-        assert result.initial_step_value == "2u"
-        assert result.final_time_value == "2m"
-        assert result.start_time_value == "100n"
-        assert result.step_ceiling_value == "10u"
-        assert result.op_keyword == "NOOP"
+        assert result.analysis.initial_step_value == "2u"
+        assert result.analysis.final_time_value == "2m"
+        assert result.analysis.start_time_value == "100n"
+        assert result.analysis.step_ceiling_value == "10u"
+        assert result.analysis.op_keyword == "NOOP"
 
     def test_rejects_when_initial_step_empty(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("", "1m", "", "", "", False, "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("", "1m", "", "", "", False, "", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("transientErrorText", "Initial step and final time are required")
+        dialog._root.setProperty.assert_any_call("errorText", "Initial step and final time are required")
+
+    def test_invalid_measure_transient(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        # act with invalid .MEASURE directive (typo .MEAS)
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", ".MEAS gg", False, "TRAN", False, False, False, False, False, "", "", "", False)
+        # assert
+        dialog.accept.assert_not_called()
+        dialog._root.setProperty.assert_any_call("errorText", "Invalid .MEASURE directive for TRAN: .MEAS gg")
 
     def test_rejects_when_final_time_empty(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("1u", "", "", "", "", False, "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1u", "", "", "", "", False, "", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
 
@@ -273,35 +341,35 @@ class TestSimulationParametersDialogOnSubmitTransient:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("1u", "1m", "", "", "INVALID", False, "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1u", "1m", "", "", "INVALID", False, "", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("transientErrorText", "Operating-point mode must be Default, NOOP, or UIC")
+        dialog._root.setProperty.assert_any_call("errorText", "Operating-point mode must be Default, NOOP, or UIC")
 
     def test_rejects_when_schedule_enabled_but_no_pairs(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("1u", "1m", "", "", "", True, "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1u", "1m", "", "", "", True, "", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("transientErrorText", "Schedule is enabled but no time,max-step pairs were provided")
+        dialog._root.setProperty.assert_any_call("errorText", "Schedule is enabled but no time,max-step pairs were provided")
 
     def test_accepts_valid_schedule_pairs(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("1n", "10u", "", "", "", True, "1u,10n 5u,50n", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1n", "10u", "", "", "", True, "1u,10n 5u,50n", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert len(result.schedule_points) == 2
+        assert len(result.analysis.schedule_points) == 2
 
     def test_rejects_odd_number_of_schedule_tokens(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("1n", "10u", "", "", "", True, "1u 10n 5u", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1n", "10u", "", "", "", True, "1u 10n 5u", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert — odd tokens is invalid format
         dialog.accept.assert_not_called()
 
@@ -309,48 +377,99 @@ class TestSimulationParametersDialogOnSubmitTransient:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
-        dialog._root.setProperty.assert_any_call("transientErrorText", "")
+        dialog._root.setProperty.assert_any_call("errorText", "")
 
     def test_strips_whitespace_from_inputs(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         result = dialog._result
-        assert result.initial_step_value == "1u"
-        assert result.final_time_value == "1m"
+        assert result.analysis.initial_step_value == "1u"
+        assert result.analysis.final_time_value == "1m"
 
     def test_accepts_valid_fft_directives(self):
         # arrange
         dialog = _make_dialog_with_accept()
         fft_text = ".FFT V(1)\nV(2) WINDOW=RECT\n"
         # act
-        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", fft_text, "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", fft_text, "", "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert len(result.fft_parameters) == 2
-        assert result.fft_parameters[0].output_variable == "V(1)"
-        assert result.fft_parameters[1].output_variable == "V(2)"
-        assert result.fft_parameters[1].window == "RECT"
+        assert len(result.analysis.fft_parameters) == 2
+        assert result.analysis.fft_parameters[0].output_variable == "V(1)"
+        assert result.analysis.fft_parameters[1].output_variable == "V(2)"
+        assert result.analysis.fft_parameters[1].window == "RECT"
 
     def test_accepts_valid_four_directives(self):
         # arrange
         dialog = _make_dialog_with_accept()
         four_text = ".FOUR 1k V(1)\n2k V(2) I(1)\n"
         # act
-        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", four_text, False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", four_text, "", False, "TRAN", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert len(result.four_parameters) == 2
-        assert result.four_parameters[0].fundamental_frequency == "1k"
-        assert result.four_parameters[0].output_variables == ("V(1)",)
-        assert result.four_parameters[1].fundamental_frequency == "2k"
-        assert result.four_parameters[1].output_variables == ("V(2)", "I(1)")
+        assert len(result.analysis.four_parameters) == 2
+        assert result.analysis.four_parameters[0].fundamental_frequency == "1k"
+        assert result.analysis.four_parameters[0].output_variables == ("V(1)",)
+        assert result.analysis.four_parameters[1].fundamental_frequency == "2k"
+        assert result.analysis.four_parameters[1].output_variables == ("V(2)", "I(1)")
+
+    def test_accepts_valid_measure_directives(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        measure_text = ".MEASURE TRAN RISE_TIME MAX V(OUT) RISE=1\n.MEASURE TRAN FALL_TIME MIN V(OUT) FALL=1\n"
+        # act
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", measure_text, False, "TRAN", False, False, False, False, False, "", "", "", False)
+        # assert
+        dialog.accept.assert_called_once()
+        result = dialog._result
+        assert len(result.analysis.measure_parameters) == 2
+        assert result.analysis.measure_parameters[0].result_name == "RISE_TIME"
+        assert result.analysis.measure_parameters[0].measure_type == "MAX"
+        assert result.analysis.measure_parameters[0].variable == "V(OUT)"
+        assert result.analysis.measure_parameters[0].rise_val == "1"
+        assert result.analysis.measure_parameters[1].result_name == "FALL_TIME"
+        assert result.analysis.measure_parameters[1].measure_type == "MIN"
+        assert result.analysis.measure_parameters[1].variable == "V(OUT)"
+        assert result.analysis.measure_parameters[1].fall_val == "1"
+
+    def test_accepts_measure_directives_without_prefix(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        measure_text = "RISE_TIME MAX V(OUT) RISE=1\nFALL_TIME MIN V(OUT) FALL=1\n"
+        # act
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", measure_text, False, "TRAN", False, False, False, False, False, "", "", "", False)
+        # assert
+        dialog.accept.assert_called_once()
+        result = dialog._result
+        assert len(result.analysis.measure_parameters) == 2
+        assert result.analysis.measure_parameters[0].analysis_type == "TRAN"
+
+    def test_rejects_measure_directives_with_wrong_analysis_type(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        measure_text = ".MEASURE DC RISE_TIME MAX V(OUT) RISE=1\n.MEASURE TRAN FALL_TIME MIN V(OUT) FALL=1\n"
+        # act
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", measure_text, False, "TRAN", False, False, False, False, False, "", "", "", False)
+        # assert
+        dialog.accept.assert_not_called()
+        dialog._root.setProperty.assert_any_call("errorText", "Invalid .MEASURE directive for TRAN: .MEASURE DC RISE_TIME MAX V(OUT) RISE=1")
+
+    def test_rejects_invalid_measure_directives(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        measure_text = ".MEASURE TRAN INVALID_SYNTAX\n.MEASURE TRAN RISE_TIME MAX V(OUT) RISE=1\n"
+        # act
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", measure_text, False, "TRAN", False, False, False, False, False, "", "", "", False)
+        # assert
+        dialog.accept.assert_not_called()
+        dialog._root.setProperty.assert_any_call("errorText", "Invalid .MEASURE directive for TRAN: .MEASURE TRAN INVALID_SYNTAX")
 
 
 class TestSimulationParametersDialogOnSubmitDC:
@@ -359,34 +478,43 @@ class TestSimulationParametersDialogOnSubmitDC:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
-        assert isinstance(dialog._result, DCSimulationParameters)
+        assert isinstance(dialog._result.analysis, DCSimulationParameters)
+
+    def test_invalid_measure_dc(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        # act with invalid .MEASURE directive for DC
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", ".MEAS gg", False, "DC", False, False, False, False, False, "", "", "", False)
+        # assert
+        dialog.accept.assert_not_called()
+        dialog._root.setProperty.assert_any_call("errorText", "Invalid .MEASURE directive for DC: .MEAS gg")
 
     def test_rejects_invalid_sweep_mode(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("INVALID", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("INVALID", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Sweep mode must be one of LIN, DEC, OCT, LIST, or DATA")
+        dialog._root.setProperty.assert_any_call("errorText", "Sweep mode must be one of LIN, DEC, OCT, LIST, or DATA")
 
     def test_rejects_lin_when_primary_variable_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Primary sweep variable is required")
+        dialog._root.setProperty.assert_any_call("errorText", "Primary sweep variable is required")
 
     def test_rejects_lin_when_start_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "VIN", "", "5", "0.1", "", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "VIN", "", "5", "0.1", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
 
@@ -394,7 +522,7 @@ class TestSimulationParametersDialogOnSubmitDC:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "VIN", "0", "", "0.1", "", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "VIN", "0", "", "0.1", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
 
@@ -402,16 +530,16 @@ class TestSimulationParametersDialogOnSubmitDC:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "VIN", "0", "5", "", "", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Start, stop, and step values are required for LIN sweep")
+        dialog._root.setProperty.assert_any_call("errorText", "Start, stop, and step values are required for LIN sweep")
 
     def test_accepts_dec_with_points(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "10", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "10", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
 
@@ -419,16 +547,16 @@ class TestSimulationParametersDialogOnSubmitDC:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "0", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "0", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Points must be an integer \u2265 1")
+        dialog._root.setProperty.assert_any_call("errorText", "Points must be an integer \u2265 1")
 
     def test_rejects_dec_when_points_non_integer(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "abc", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "abc", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
 
@@ -436,16 +564,16 @@ class TestSimulationParametersDialogOnSubmitDC:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("DEC", "VIN", "", "", "", "10", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("DEC", "VIN", "", "", "", "10", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Start, stop, and points are required for DEC/OCT sweep")
+        dialog._root.setProperty.assert_any_call("errorText", "Start, stop, and points are required for DEC/OCT sweep")
 
     def test_accepts_oct_mode(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("OCT", "VIN", "0.125", "64", "", "2", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("OCT", "VIN", "0.125", "64", "", "2", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
 
@@ -453,7 +581,7 @@ class TestSimulationParametersDialogOnSubmitDC:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIST", "TEMP", "", "", "", "", "10 20 30", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIST", "TEMP", "", "", "", "", "10 20 30", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
 
@@ -461,16 +589,16 @@ class TestSimulationParametersDialogOnSubmitDC:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIST", "TEMP", "", "", "", "", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIST", "TEMP", "", "", "", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "At least one list value is required for LIST sweep")
+        dialog._root.setProperty.assert_any_call("errorText", "At least one list value is required for LIST sweep")
 
     def test_accepts_data_mode_with_table_name(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("DATA", "", "", "", "", "", "", "resistorValues", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("DATA", "", "", "", "", "", "", "resistorValues", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
 
@@ -478,70 +606,70 @@ class TestSimulationParametersDialogOnSubmitDC:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("DATA", "", "", "", "", "", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("DATA", "", "", "", "", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Data table name is required for DATA sweep")
+        dialog._root.setProperty.assert_any_call("errorText", "Data table name is required for DATA sweep")
 
     def test_rejects_secondary_lin_when_variable_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act — secondary enabled but variable empty
-        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", True, "", "0", "3", "0.5", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", True, "", "0", "3", "0.5", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Secondary sweep variable is required when secondary sweep is enabled")
+        dialog._root.setProperty.assert_any_call("errorText", "Secondary sweep variable is required when secondary sweep is enabled")
 
     def test_rejects_secondary_lin_when_step_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", True, "VCC", "3", "5", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", True, "VCC", "3", "5", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Secondary sweep step is required for LIN mode")
+        dialog._root.setProperty.assert_any_call("errorText", "Secondary sweep step is required for LIN mode")
 
     def test_rejects_secondary_dec_when_points_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "10", "", "", True, "VCC", "1", "10", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "10", "", "", True, "VCC", "1", "10", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Secondary sweep points are required for DEC/OCT mode")
+        dialog._root.setProperty.assert_any_call("errorText", "Secondary sweep points are required for DEC/OCT mode")
 
     def test_rejects_secondary_dec_when_points_invalid(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "10", "", "", True, "VCC", "1", "10", "", "0", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("DEC", "VIN", "1", "100", "", "10", "", "", True, "VCC", "1", "10", "", "0", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Secondary points must be an integer \u2265 1")
+        dialog._root.setProperty.assert_any_call("errorText", "Secondary points must be an integer \u2265 1")
 
     def test_rejects_secondary_lin_when_start_stop_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", True, "VCC", "", "", "0.5", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", True, "VCC", "", "", "0.5", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "Secondary sweep start and stop are required")
+        dialog._root.setProperty.assert_any_call("errorText", "Secondary sweep start and stop are required")
 
     def test_accepts_full_lin_with_secondary(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", True, "VCC", "3", "5", "0.5", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", True, "VCC", "3", "5", "0.5", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
-        assert dialog._result.secondary_variable == "VCC"
+        assert dialog._result.analysis.secondary_variable == "VCC"
 
     def test_data_mode_ignores_secondary_sweep(self):
         # arrange — DATA mode does not support secondary
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("DATA", "", "", "", "", "", "", "myTable", True, "VCC", "0", "5", "1", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("DATA", "", "", "", "", "", "", "myTable", True, "VCC", "0", "5", "1", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert — DATA is not in _DC_SECONDARY_MODES so secondary is ignored
         dialog.accept.assert_called_once()
 
@@ -549,9 +677,26 @@ class TestSimulationParametersDialogOnSubmitDC:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
-        dialog._root.setProperty.assert_any_call("dcErrorText", "")
+        dialog._root.setProperty.assert_any_call("errorText", "")
+
+    def test_accepts_valid_measure_directives(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        measure_text = ".MEASURE DC VIN_AT_2V FIND V(1) WHEN V(1)=2\n.MEASURE DC MAX_CURRENT MAX I(R1)\n"
+        # act
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", measure_text, False, "DC", False, False, False, False, False, "", "", "", False)
+        # assert
+        dialog.accept.assert_called_once()
+        result = dialog._result
+        assert len(result.analysis.measure_parameters) == 2
+        assert result.analysis.measure_parameters[0].result_name == "VIN_AT_2V"
+        assert result.analysis.measure_parameters[0].measure_type == "FIND"
+        assert result.analysis.measure_parameters[0].variable == "V(1)"
+        assert result.analysis.measure_parameters[1].result_name == "MAX_CURRENT"
+        assert result.analysis.measure_parameters[1].measure_type == "MAX"
+        assert result.analysis.measure_parameters[1].variable == "I(R1)"
 
 
 class TestSimulationParametersDialogParseSchedulePoints:
@@ -605,10 +750,10 @@ class TestSimulationParametersDialogOnSubmitDCListParseError:
         dialog = _make_dialog_with_accept()
         with patch("simulation_parameters.simulation_parameters_dialog._parse_list_values", side_effect=ValueError("bad values")):
             # act
-            dialog._on_submit_dc("LIST", "TEMP", "", "", "", "", "bad input", "", False, "", "", "", "", "", False, False, False, False, False, False, "", "", "", False)
+            dialog._on_submit_dc("LIST", "TEMP", "", "", "", "", "bad input", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("dcErrorText", "bad values")
+        dialog._root.setProperty.assert_any_call("errorText", "bad values")
 
 
 class TestSimulationParametersDialogGetParameters:
@@ -899,6 +1044,21 @@ class TestApplyHBParameters:
         dialog._root.setProperty.assert_any_call("hbPrintTypeIndex", 2)
         dialog._root.setProperty.assert_any_call("hbPrintFile", "hb.csv")
 
+    def test_restores_saved_hb_solver_options(self):
+        # arrange
+        params = HbSimulationParameters(
+            frequencies=("1MEG",),
+            nonlin_options={"ABSTOL": "1e-9", "MAXIT": "50"},
+            linsol_options={"TYPE": "AZTECOO"},
+            replace_ground=False
+        )
+        dialog = _make_dialog()
+        # act
+        dialog._apply_hb_parameters(params)
+        # assert
+        dialog._root.setProperty.assert_any_call("hbNonlinOptionsText", "ABSTOL=1e-9 MAXIT=50")
+        dialog._root.setProperty.assert_any_call("hbLinsolOptionsText", "TYPE=AZTECOO")
+
 
 class TestApplyLinParameters:
 
@@ -942,88 +1102,114 @@ class TestSimulationParametersDialogOnSubmitNoise:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_noise("5", "", "V1", "LIN", "100", "1", "1MEG", "", False, False, False, False, False, "", "", "", False, [])
+        dialog._on_submit_noise("5", "", "V1", "LIN", "100", "1", "1MEG", "", "", False, False, False, False, False, "", "", "", False, [])
         # assert
         dialog.accept.assert_called_once()
-        assert isinstance(dialog._result, NoiseSimulationParameters)
+        assert isinstance(dialog._result.analysis, NoiseSimulationParameters)
 
     def test_rejects_noise_without_output_node(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_noise("", "", "V1", "LIN", "100", "1", "1MEG", "", False, False, False, False, False, "", "", "", False, [])
+        dialog._on_submit_noise("", "", "V1", "LIN", "100", "1", "1MEG", "", "", False, False, False, False, False, "", "", "", False, [])
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("noiseErrorText", "Output node is required")
+        dialog._root.setProperty.assert_any_call("errorText", "Output node is required")
+
+    def test_invalid_measure_noise(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        # act with invalid .MEASURE directive for Noise
+        dialog._on_submit_noise("5", "", "V1", "LIN", "100", "1", "1MEG", "", ".MEAS gg", False, False, False, False, False, "", "", "", False, [])
+        # assert
+        dialog.accept.assert_not_called()
+        dialog._root.setProperty.assert_any_call("errorText", "Invalid .MEASURE directive for NOISE: .MEAS gg")
 
     def test_rejects_noise_without_source_name(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_noise("5", "", "", "LIN", "100", "1", "1MEG", "", False, False, False, False, False, "", "", "", False, [])
+        dialog._on_submit_noise("5", "", "", "LIN", "100", "1", "1MEG", "", "", False, False, False, False, False, "", "", "", False, [])
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("noiseErrorText", "Input noise source name is required")
+        dialog._root.setProperty.assert_any_call("errorText", "Input noise source name is required")
 
     def test_rejects_noise_with_invalid_sweep_mode(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_noise("5", "", "V1", "INVALID", "100", "1", "1MEG", "", False, False, False, False, False, "", "", "", False, [])
+        dialog._on_submit_noise("5", "", "V1", "INVALID", "100", "1", "1MEG", "", "", False, False, False, False, False, "", "", "", False, [])
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("noiseErrorText", "Sweep mode must be one of LIN, DEC, OCT, or DATA")
+        dialog._root.setProperty.assert_any_call("errorText", "Sweep mode must be one of LIN, DEC, OCT, or DATA")
 
     def test_rejects_noise_lin_when_sweep_fields_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_noise("5", "", "V1", "LIN", "", "", "", "", False, False, False, False, False, "", "", "", False, [])
+        dialog._on_submit_noise("5", "", "V1", "LIN", "", "", "", "", "", False, False, False, False, False, "", "", "", False, [])
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("noiseErrorText", "Points, start frequency, and end frequency are required")
+        dialog._root.setProperty.assert_any_call("errorText", "Points, start frequency, and end frequency are required")
 
     def test_rejects_noise_data_when_table_name_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_noise("5", "", "V1", "DATA", "", "", "", "", False, False, False, False, False, "", "", "", False, [])
+        dialog._on_submit_noise("5", "", "V1", "DATA", "", "", "", "", "", False, False, False, False, False, "", "", "", False, [])
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("noiseErrorText", "Data table name is required for DATA sweep")
+        dialog._root.setProperty.assert_any_call("errorText", "Data table name is required for DATA sweep")
 
     def test_clears_error_on_success(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_noise("5", "", "V1", "LIN", "100", "1", "1MEG", "", False, False, False, False, False, "", "", "", False, [])
+        dialog._on_submit_noise("5", "", "V1", "LIN", "100", "1", "1MEG", "", "", False, False, False, False, False, "", "", "", False, [])
         # assert
-        dialog._root.setProperty.assert_any_call("noiseErrorText", "")
+        dialog._root.setProperty.assert_any_call("errorText", "")
 
     def test_noise_with_print_enabled(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_noise("5", "", "V1", "LIN", "100", "1", "1MEG", "", True, True, True, True, True, "DNI(V1)", "CSV", "noise.csv", False, [])
+        dialog._on_submit_noise("5", "", "V1", "LIN", "100", "1", "1MEG", "", "", True, True, True, True, True, "DNI(V1)", "CSV", "noise.csv", False, [])
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert result.print_parameters is not None
-        assert result.print_parameters.print_type == "NOISE"
-        assert "V(*)" in result.print_parameters.output_variables
-        assert "INOISE" in result.print_parameters.output_variables
-        assert "ONOISE" in result.print_parameters.output_variables
-        assert "DNI(V1)" in result.print_parameters.output_variables
+        assert result.analysis.print_parameters is not None
+        assert result.analysis.print_parameters.print_type == "NOISE"
+        assert "V(*)" in result.analysis.print_parameters.output_variables
+        assert "INOISE" in result.analysis.print_parameters.output_variables
+        assert "ONOISE" in result.analysis.print_parameters.output_variables
+        assert "DNI(V1)" in result.analysis.print_parameters.output_variables
 
     def test_noise_data_sweep_accepted(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_noise("5", "", "V1", "DATA", "", "", "", "myTable", False, False, False, False, False, "", "", "", False, [])
+        dialog._on_submit_noise("5", "", "V1", "DATA", "", "", "", "myTable", "", False, False, False, False, False, "", "", "", False, [])
         # assert
         dialog.accept.assert_called_once()
-        assert dialog._result.sweep_mode == "DATA"
-        assert dialog._result.data_table_name == "myTable"
+        assert dialog._result.analysis.sweep_mode == "DATA"
+        assert dialog._result.analysis.data_table_name == "myTable"
+
+    def test_accepts_valid_measure_directives(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        measure_text = ".MEASURE NOISE TOTAL_INOISE INTEG INOISE\n.MEASURE NOISE TOTAL_ONOISE INTEG ONOISE\n"
+        # act
+        dialog._on_submit_noise("5", "", "V1", "LIN", "100", "1", "1MEG", "", measure_text, False, False, False, False, False, "", "", "", False, [])
+        # assert
+        dialog.accept.assert_called_once()
+        result = dialog._result
+        assert len(result.analysis.measure_parameters) == 2
+        assert result.analysis.measure_parameters[0].result_name == "TOTAL_INOISE"
+        assert result.analysis.measure_parameters[0].measure_type == "INTEG"
+        assert result.analysis.measure_parameters[0].variable == "INOISE"
+        assert result.analysis.measure_parameters[1].result_name == "TOTAL_ONOISE"
+        assert result.analysis.measure_parameters[1].measure_type == "INTEG"
+        assert result.analysis.measure_parameters[1].variable == "ONOISE"
 
 
 class TestSimulationParametersDialogOnSubmitLin:
@@ -1035,7 +1221,7 @@ class TestSimulationParametersDialogOnSubmitLin:
         dialog._on_submit_lin(True, "TOUCHSTONE2", "S", "RI", "", "", "", "LIN", "100", "1", "1MEG", "", False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
-        assert isinstance(dialog._result, LinSimulationParameters)
+        assert isinstance(dialog._result.analysis, LinSimulationParameters)
 
     def test_rejects_lin_with_invalid_sweep_mode(self):
         # arrange
@@ -1044,7 +1230,7 @@ class TestSimulationParametersDialogOnSubmitLin:
         dialog._on_submit_lin(True, "TOUCHSTONE2", "S", "RI", "", "", "", "INVALID", "100", "1", "1MEG", "", False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("linErrorText", "Sweep mode must be one of LIN, DEC, OCT, or DATA")
+        dialog._root.setProperty.assert_any_call("errorText", "Sweep mode must be one of LIN, DEC, OCT, or DATA")
 
     def test_rejects_lin_when_sweep_fields_missing(self):
         # arrange
@@ -1053,7 +1239,7 @@ class TestSimulationParametersDialogOnSubmitLin:
         dialog._on_submit_lin(True, "TOUCHSTONE2", "S", "RI", "", "", "", "LIN", "", "", "", "", False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("linErrorText", "Points, start frequency, and end frequency are required")
+        dialog._root.setProperty.assert_any_call("errorText", "Points, start frequency, and end frequency are required")
 
     def test_rejects_lin_data_when_table_name_missing(self):
         # arrange
@@ -1062,7 +1248,7 @@ class TestSimulationParametersDialogOnSubmitLin:
         dialog._on_submit_lin(True, "TOUCHSTONE2", "S", "RI", "", "", "", "DATA", "", "", "", "", False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("linErrorText", "Data table name is required for DATA sweep")
+        dialog._root.setProperty.assert_any_call("errorText", "Data table name is required for DATA sweep")
 
     def test_clears_error_on_success(self):
         # arrange
@@ -1070,7 +1256,7 @@ class TestSimulationParametersDialogOnSubmitLin:
         # act
         dialog._on_submit_lin(True, "TOUCHSTONE2", "S", "RI", "", "", "", "LIN", "100", "1", "1MEG", "", False, False, False, "", "", "", False)
         # assert
-        dialog._root.setProperty.assert_any_call("linErrorText", "")
+        dialog._root.setProperty.assert_any_call("errorText", "")
 
     def test_lin_with_print_enabled(self):
         # arrange
@@ -1080,9 +1266,9 @@ class TestSimulationParametersDialogOnSubmitLin:
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert result.print_parameters is not None
-        assert "V(*)" in result.print_parameters.output_variables
-        assert "V(1)" in result.print_parameters.output_variables
+        assert result.analysis.print_parameters is not None
+        assert "V(*)" in result.analysis.print_parameters.output_variables
+        assert "V(1)" in result.analysis.print_parameters.output_variables
 
     def test_lin_data_sweep_accepted(self):
         # arrange
@@ -1091,7 +1277,7 @@ class TestSimulationParametersDialogOnSubmitLin:
         dialog._on_submit_lin(True, "TOUCHSTONE2", "S", "RI", "", "", "", "DATA", "", "", "", "myTable", False, False, False, "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
-        assert dialog._result.sweep_mode == "DATA"
+        assert dialog._result.analysis.sweep_mode == "DATA"
 
 
 class TestSimulationParametersDialogOnSubmitHB:
@@ -1100,67 +1286,69 @@ class TestSimulationParametersDialogOnSubmitHB:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_hb("1MEG", False, False, False, "HB", "", "", "", False)
+        dialog._on_submit_hb("1MEG", "", 1, "hybrid", 0, False, False, False, "HB", "", "", "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
-        assert isinstance(dialog._result, HbSimulationParameters)
+        assert isinstance(dialog._result.analysis, HbSimulationParameters)
 
     def test_rejects_hb_when_frequencies_empty(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_hb("", False, False, False, "HB", "", "", "", False)
+        dialog._on_submit_hb("", "", 1, "hybrid", 0, False, False, False, "HB", "", "", "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("hbErrorText", "At least one fundamental frequency is required")
+        dialog._root.setProperty.assert_any_call("errorText", "At least one fundamental frequency is required")
 
     def test_accepts_multiple_frequencies(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_hb("1MEG 2MEG 3MEG", False, False, False, "HB", "", "", "", False)
+        dialog._on_submit_hb("1MEG 2MEG 3MEG", "", 1, "hybrid", 0, False, False, False, "HB", "", "", "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
-        assert len(dialog._result.frequencies) == 3
+        assert len(dialog._result.analysis.frequencies) == 3
 
     def test_hb_with_print_enabled(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_hb("1MEG", True, True, True, "HB_FD", "V(1)", "CSV", "hb.csv", False)
+        dialog._on_submit_hb("1MEG", "", 1, "hybrid", 0, True, True, True, "HB_FD", "V(1)", "CSV", "hb.csv", "", "", False)
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert result.print_parameters is not None
-        assert result.print_parameters.print_type == "HB_FD"
-        assert "V(*)" in result.print_parameters.output_variables
-        assert "V(1)" in result.print_parameters.output_variables
+        assert result.analysis.print_parameters is not None
+        assert result.analysis.print_parameters.print_type == "HB_FD"
+        assert "V(*)" in result.analysis.print_parameters.output_variables
+        assert "V(1)" in result.analysis.print_parameters.output_variables
 
     def test_hb_invalid_print_type_falls_back_to_hb(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_hb("1MEG", True, False, False, "INVALID", "", "", "", False)
+        dialog._on_submit_hb("1MEG", "", 1, "hybrid", 0, True, False, False, "INVALID", "", "", "", "ABSTOL=1e-9", "TYPE=AZTECOO", False)
         # assert
         dialog.accept.assert_called_once()
-        assert dialog._result.print_parameters.print_type == "HB"
+        assert dialog._result.analysis.print_parameters.print_type == "HB"
+        assert dialog._result.analysis.nonlin_options == {"ABSTOL": "1e-9"}
+        assert dialog._result.analysis.linsol_options == {"TYPE": "AZTECOO"}
 
     def test_clears_hb_error_on_success(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_hb("1MEG", False, False, False, "HB", "", "", "", False)
+        dialog._on_submit_hb("1MEG", "", 1, "hybrid", 0, False, False, False, "HB", "", "", "", "", "", False)
         # assert
-        dialog._root.setProperty.assert_any_call("hbErrorText", "")
+        dialog._root.setProperty.assert_any_call("errorText", "")
 
     def test_rejects_hb_when_frequencies_parse_to_empty(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act — whitespace-only text parses to no tokens
-        dialog._on_submit_hb("  ,  ", False, False, False, "HB", "", "", "", False)
+        dialog._on_submit_hb("  ,  ", "", 1, "hybrid", 0, False, False, False, "HB", "", "", "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("hbErrorText", "At least one fundamental frequency is required")
+        dialog._root.setProperty.assert_any_call("errorText", "At least one fundamental frequency is required")
 
 
 class TestSimulationParametersDialogOnSubmitACWithPrint:
@@ -1169,43 +1357,69 @@ class TestSimulationParametersDialogOnSubmitACWithPrint:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_ac("LIN", "100", "1", "1MEG", "", True, True, True, "VM(OUT)", "CSV", "ac.csv", False)
+        dialog._on_submit_ac("LIN", "100", "1", "1MEG", "", "", True, "AC", True, True, "VM(OUT)", "CSV", "ac.csv", False)
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert result.print_parameters is not None
-        assert "V(*)" in result.print_parameters.output_variables
-        assert "I(*)" in result.print_parameters.output_variables
-        assert "VM(OUT)" in result.print_parameters.output_variables
-        assert result.print_parameters.print_format == "CSV"
-        assert result.print_parameters.print_file == "ac.csv"
+        assert result.analysis.print_parameters is not None
+        assert "V(*)" in result.analysis.print_parameters.output_variables
+        assert "I(*)" in result.analysis.print_parameters.output_variables
+        assert "VM(OUT)" in result.analysis.print_parameters.output_variables
+        assert result.analysis.print_parameters.print_format == "CSV"
+        assert result.analysis.print_parameters.print_file == "ac.csv"
 
     def test_rejects_ac_with_invalid_sweep_mode(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_ac("INVALID", "100", "1", "1MEG", "", False, False, False, "", "", "", False)
+        dialog._on_submit_ac("INVALID", "100", "1", "1MEG", "", "", False, "AC", False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("acErrorText", "Sweep mode must be one of LIN, DEC, OCT, or DATA")
+        dialog._root.setProperty.assert_any_call("errorText", "Sweep mode must be one of LIN, DEC, OCT, or DATA")
+
+    def test_invalid_measure_ac(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        # act with invalid .MEASURE directive for AC
+        dialog._on_submit_ac("LIN", "100", "1", "1MEG", "", ".MEAS gg", False, "AC", False, False, "", "", "", False)
+        # assert
+        dialog.accept.assert_not_called()
+        dialog._root.setProperty.assert_any_call("errorText", "Invalid .MEASURE directive for AC: .MEAS gg")
 
     def test_rejects_ac_lin_when_sweep_fields_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_ac("LIN", "", "", "", "", False, False, False, "", "", "", False)
+        dialog._on_submit_ac("LIN", "", "", "", "", "", False, "AC", False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("acErrorText", "Points, start frequency, and end frequency are required")
+        dialog._root.setProperty.assert_any_call("errorText", "Points, start frequency, and end frequency are required")
 
     def test_rejects_ac_data_when_table_name_missing(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_ac("DATA", "", "", "", "", False, False, False, "", "", "", False)
+        dialog._on_submit_ac("DATA", "", "", "", "", "", False, "AC", False, False, "", "", "", False)
         # assert
         dialog.accept.assert_not_called()
-        dialog._root.setProperty.assert_any_call("acErrorText", "Data table name is required for DATA sweep")
+        dialog._root.setProperty.assert_any_call("errorText", "Data table name is required for DATA sweep")
+
+    def test_accepts_valid_measure_directives(self):
+        # arrange
+        dialog = _make_dialog_with_accept()
+        measure_text = ".MEASURE AC BANDWIDTH FIND V(OUT) WHEN V(OUT)=0.707\n.MEASURE AC GAIN_AT_1K FIND V(OUT) AT=1k\n"
+        # act
+        dialog._on_submit_ac("LIN", "100", "1", "1MEG", "", measure_text, False, "AC", False, False, "", "", "", False)
+        # assert
+        dialog.accept.assert_called_once()
+        result = dialog._result
+        assert len(result.analysis.measure_parameters) == 2
+        assert result.analysis.measure_parameters[0].result_name == "BANDWIDTH"
+        assert result.analysis.measure_parameters[0].measure_type == "FIND"
+        assert result.analysis.measure_parameters[0].variable == "V(OUT)"
+        assert result.analysis.measure_parameters[1].result_name == "GAIN_AT_1K"
+        assert result.analysis.measure_parameters[1].measure_type == "FIND"
+        assert result.analysis.measure_parameters[1].at_val == "1k"
 
 
 class TestSimulationParametersDialogOnSubmitTransientWithPrint:
@@ -1214,17 +1428,17 @@ class TestSimulationParametersDialogOnSubmitTransientWithPrint:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", True, True, True, True, True, True, "V(1)", "CSV", "t.csv", False)
+        dialog._on_submit_transient("1u", "1m", "", "", "", False, "", "", "", "", True, "TRAN", True, True, True, True, True, "V(1)", "CSV", "t.csv", False)
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert result.print_parameters is not None
-        assert "V(*)" in result.print_parameters.output_variables
-        assert "I(*)" in result.print_parameters.output_variables
-        assert "P(*)" in result.print_parameters.output_variables
-        assert "IC(*)" in result.print_parameters.output_variables
-        assert "ID(*)" in result.print_parameters.output_variables
-        assert "V(1)" in result.print_parameters.output_variables
+        assert result.analysis.print_parameters is not None
+        assert "V(*)" in result.analysis.print_parameters.output_variables
+        assert "I(*)" in result.analysis.print_parameters.output_variables
+        assert "P(*)" in result.analysis.print_parameters.output_variables
+        assert "IC(*)" in result.analysis.print_parameters.output_variables
+        assert "ID(*)" in result.analysis.print_parameters.output_variables
+        assert "V(1)" in result.analysis.print_parameters.output_variables
 
 
 class TestSimulationParametersDialogOnSubmitOPWithPrint:
@@ -1233,30 +1447,30 @@ class TestSimulationParametersDialogOnSubmitOPWithPrint:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_op(True, True, True, True, True, True, "V(1)", "CSV", "op.csv", False, "NODESET", "", "", False)
+        dialog._on_submit_op(True, True, True, True, True, True, "V(1)", "CSV", "op.csv", False, "NODESET", "", "", "", False)
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert result.print_parameters is not None
-        assert "V(*)" in result.print_parameters.output_variables
-        assert "P(*)" in result.print_parameters.output_variables
-        assert "IC(*)" in result.print_parameters.output_variables
-        assert "ID(*)" in result.print_parameters.output_variables
-        assert "V(1)" in result.print_parameters.output_variables
+        assert result.analysis.print_parameters is not None
+        assert "V(*)" in result.analysis.print_parameters.output_variables
+        assert "P(*)" in result.analysis.print_parameters.output_variables
+        assert "IC(*)" in result.analysis.print_parameters.output_variables
+        assert "ID(*)" in result.analysis.print_parameters.output_variables
+        assert "V(1)" in result.analysis.print_parameters.output_variables
 
     def test_op_parses_nodeset_text_into_entries(self):
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_op(False, False, False, False, False, False, "", "", "", True, "NODESET", "V(out)=3.3 V(in)=5.0", "", False)
+        dialog._on_submit_op(False, False, False, False, False, False, "", "", "", True, "NODESET", "V(out)=3.3 V(in)=5.0", "", "", False)
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert len(result.nodeset_entries) == 2
-        assert result.nodeset_entries[0].node == "out"
-        assert result.nodeset_entries[0].voltage == "3.3"
-        assert result.nodeset_entries[1].node == "in"
-        assert result.nodeset_entries[1].voltage == "5.0"
+        assert len(result.analysis.nodeset_entries) == 2
+        assert result.analysis.nodeset_entries[0].node == "out"
+        assert result.analysis.nodeset_entries[0].voltage == "3.3"
+        assert result.analysis.nodeset_entries[1].node == "in"
+        assert result.analysis.nodeset_entries[1].voltage == "5.0"
 
 
 class TestSimulationParametersDialogOnSubmitDCWithPrint:
@@ -1265,13 +1479,57 @@ class TestSimulationParametersDialogOnSubmitDCWithPrint:
         # arrange
         dialog = _make_dialog_with_accept()
         # act
-        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", True, True, True, True, True, True, "V(1)", "CSV", "dc.csv", False)
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", "", True, "DC", True, True, True, True, True, "V(1)", "CSV", "dc.csv", False)
         # assert
         dialog.accept.assert_called_once()
         result = dialog._result
-        assert result.print_parameters is not None
-        assert "V(*)" in result.print_parameters.output_variables
-        assert "P(*)" in result.print_parameters.output_variables
-        assert "IC(*)" in result.print_parameters.output_variables
-        assert "ID(*)" in result.print_parameters.output_variables
-        assert "V(1)" in result.print_parameters.output_variables
+        assert result.analysis.print_parameters is not None
+        assert "V(*)" in result.analysis.print_parameters.output_variables
+        assert "P(*)" in result.analysis.print_parameters.output_variables
+        assert "IC(*)" in result.analysis.print_parameters.output_variables
+        assert "ID(*)" in result.analysis.print_parameters.output_variables
+        assert "V(1)" in result.analysis.print_parameters.output_variables
+
+
+class TestSimulationParametersDialogSensitivityAttachment:
+
+    def test_attaches_sensitivity_to_dc_analysis_from_root_properties(self):
+        # arrange
+        initial_analysis = DCSimulationParameters("LIN", "VIN", "0", "5", "0.1", "", tuple(), "", "", "", "", "", "")
+        dialog = _make_dialog_with_accept(initial_parameters=initial_analysis)
+
+        properties = {
+            "currentTabIndex": 2,
+            "dcSensEnabled": True,
+            "dcSensObjectiveMode": "objfunc",
+            "dcSensObjectiveValues": "V(2)",
+            "dcSensParameters": "R1:R",
+            "dcSensDirect": True,
+            "dcSensAdjoint": False,
+            "dcSensPrintEnabled": False,
+            "replaceGround": False,
+            "stepEnabled": False,
+            "stepSweepModeIndex": 0,
+            "stepVariable": "",
+            "stepStartValue": "",
+            "stepStopValue": "",
+            "stepStepValue": "",
+            "stepPointsValue": "",
+            "stepListValuesText": "",
+            "stepDataTableName": ""
+        }
+        dialog._root.property.side_effect = lambda name: properties.get(name)
+
+        # act
+        dialog._on_submit_dc("LIN", "VIN", "0", "5", "0.1", "", "", "", False, "", "", "", "", "", "", False, "DC", False, False, False, False, False, "", "", "", False)
+
+        # assert
+        dialog.accept.assert_called_once()
+        assert isinstance(dialog._result.analysis, DCSimulationParameters)
+        assert dialog._result.analysis.sensitivity is not None
+        assert dialog._result.analysis.sensitivity.analysis_context == "DC"
+        assert dialog._result.analysis.sensitivity.objective_mode == "objfunc"
+        assert dialog._result.analysis.sensitivity.objective_values == ("V(2)",)
+        assert dialog._result.analysis.sensitivity.parameter_list == ("R1:R",)
+        assert dialog._result.analysis.sensitivity.direct is True
+        assert dialog._result.analysis.sensitivity.adjoint is False

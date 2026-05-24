@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from netlist_parser import NetlistTopology
+from .measure_parameters import MeasureEntry
 from .print_parameters import PrintParameters
+from .sens_parameter import SensParameter
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,8 @@ class DCSimulationParameters:
     secondary_points: str = ""
     replace_ground: bool = True
     print_parameters: PrintParameters | None = None
+    measure_parameters: tuple[MeasureEntry, ...] = ()
+    sensitivity: SensParameter | None = None
 
     @classmethod
     def from_xyce_directives(cls, directives: list[str]) -> "DCSimulationParameters" | None:
@@ -43,6 +47,8 @@ class DCSimulationParameters:
         secondary_points = ""
         replace_ground = True
         print_parameters = None
+        # init measure parameters
+        measure_parameters: list[MeasureEntry] = []
         # flag indicating whether a valid directive was found
         found = False
         # parse directives
@@ -58,7 +64,7 @@ class DCSimulationParameters:
                 # parse the print statement from the directive
                 print_statement = PrintParameters.from_xyce_statement(directive)
                 # retain dc print parameters when found
-                if print_statement and print_statement.print_type == "DC":
+                if print_statement and print_statement.print_type in ("DC", "HOMOTOPY"):
                     # store the parsed print parameters
                     print_parameters = print_statement
                     # next
@@ -67,6 +73,16 @@ class DCSimulationParameters:
             if cmd == ".PREPROCESS" and len(tokens) > 2 and tokens[1].upper() == "REPLACEGROUND":
                 # set replace_ground based on the third token
                 replace_ground = tokens[2].upper() == "TRUE"
+                # next
+                continue
+            # parse measure directives
+            if cmd in (".MEASURE", ".MEAS"):
+                # parse the measure statement from the directive
+                measure_statement = MeasureEntry.from_xyce_statement(directive)
+                # retain measure parameters when found and analysis type matches
+                if measure_statement and measure_statement.analysis_type in ("DC", "DC_CONT"):
+                    # append the parsed measure parameters
+                    measure_parameters.append(measure_statement)
                 # next
                 continue
             # skip non-DC directives
@@ -137,8 +153,10 @@ class DCSimulationParameters:
                     secondary_start = tokens[6]
                     secondary_stop = tokens[7]
                     secondary_step = tokens[8]
+        # parse sensitivity as a companion directive before analysis detection
+        sensitivity = SensParameter.from_xyce_directives(directives)
         # return instance if a valid directive was found
-        return cls(sweep_mode=sweep_mode, primary_variable=primary_variable, start=start, stop=stop, step=step, points=points, list_values=list_values, data_table_name=data_table_name, secondary_variable=secondary_variable, secondary_start=secondary_start, secondary_stop=secondary_stop, secondary_step=secondary_step, secondary_points=secondary_points, replace_ground=replace_ground, print_parameters=print_parameters) if found else None
+        return cls(sweep_mode=sweep_mode, primary_variable=primary_variable, start=start, stop=stop, step=step, points=points, list_values=list_values, data_table_name=data_table_name, secondary_variable=secondary_variable, secondary_start=secondary_start, secondary_stop=secondary_stop, secondary_step=secondary_step, secondary_points=secondary_points, replace_ground=replace_ground, print_parameters=print_parameters, measure_parameters=tuple(measure_parameters), sensitivity=sensitivity) if found else None
 
     def to_xyce_directives(self, topology: NetlistTopology | None = None) -> list[str]:
         # prepend replaceground preprocessing when enabled
@@ -153,9 +171,16 @@ class DCSimulationParameters:
         else:
             lines = [self._build_log_directive()]
         # append dc print directive when configured
-        if self.print_parameters and self.print_parameters.print_type == "DC":
+        if self.print_parameters:
             # append the print statement
             lines.append(self.print_parameters.to_xyce_statement())
+        # append sensitivity directives when configured
+        if self.sensitivity is not None:
+            lines.extend(self.sensitivity.to_xyce_directives(topology))
+        # append measure directives
+        for measure in self.measure_parameters:
+            # append measure statement
+            lines.append(measure.to_xyce_statement())
         # return the full directive list
         return preprocess + lines
 

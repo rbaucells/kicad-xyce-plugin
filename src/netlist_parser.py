@@ -264,6 +264,12 @@ def parse_netlist(text: str) -> tuple[str, NetlistTopology]:
                 directives.append(stripped)
                 # continue loop
                 continue
+            # option packages that are managed separately from the sanitized netlist
+            if first_upper == ".OPTIONS" and len(tokens) > 1 and tokens[1].upper() in ("HBINT", "NONLIN-HB", "LINSOL-HB", "DEVICE", "TIMEINT", "NONLIN", "LINSOL",):
+                # add to directives
+                directives.append(stripped)
+                # continue loop
+                continue
             # .PREPROCESS REPLACEGROUND
             if first_upper == ".PREPROCESS" and len(tokens) > 2 and tokens[1].upper() == "REPLACEGROUND":
                 # add to directives
