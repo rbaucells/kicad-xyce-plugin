@@ -190,17 +190,24 @@ Item {
                 MouseArea {
                     anchors.fill: parent
                     hoverEnabled: true
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
                     onEntered: parent.color = cellItem.selected ? "#2a4a7a" : "#2e3040"
                     onExited:  parent.color = cellItem.selected ? "#2a4a7a" : "#23252e"
-                    onClicked: {
-                        // compute new selection value by inverting the current state
-                        var newSelected = !root.selectionState[cellItem.expression]
-                        // replace the entire map object so QML detects the change and re-evaluates bindings
-                        var updated = Object.assign({}, root.selectionState)
-                        updated[cellItem.expression] = newSelected
-                        root.selectionState = updated
-                        // emit signal to notify of selection change
-                        root.selectionChanged(cellItem.expression, newSelected)
+                    onClicked: mouse => {
+                        if (mouse.button == Qt.RightButton) {
+                            # add this items expression name to expression text box
+                            exprInput.text += cellItem.expression
+                        } else if (mouse.button == Qt.LeftButton) {
+                            print("Hello, World!")
+                            // compute new selection value by inverting the current state
+                            var newSelected = !root.selectionState[cellItem.expression]
+                            // replace the entire map object so QML detects the change and re-evaluates bindings
+                            var updated = Object.assign({}, root.selectionState)
+                            updated[cellItem.expression] = newSelected
+                            root.selectionState = updated
+                            // emit signal to notify of selection change
+                            root.selectionChanged(cellItem.expression, newSelected)
+                        }
                     }
                 }
             }
