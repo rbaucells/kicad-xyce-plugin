@@ -198,8 +198,8 @@ Item {
                         if (mouse.button == Qt.RightButton) {
                             // add this items expression name to expression text box
                             exprInput.text += cellItem.expression
-                        } else if (mouse.button == Qt.LeftButton) {
-                            print("Hello, World!")
+                        } 
+                        else if (mouse.button == Qt.LeftButton) {
                             // compute new selection value by inverting the current state
                             var newSelected = !root.selectionState[cellItem.expression]
                             // replace the entire map object so QML detects the change and re-evaluates bindings
