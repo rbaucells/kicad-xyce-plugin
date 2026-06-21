@@ -195,7 +195,7 @@ Item {
                     onExited:  parent.color = cellItem.selected ? "#2a4a7a" : "#23252e"
                     onClicked: mouse => {
                         if (mouse.button == Qt.RightButton) {
-                            # add this items expression name to expression text box
+                            // add this items expression name to expression text box
                             exprInput.text += cellItem.expression
                         } else if (mouse.button == Qt.LeftButton) {
                             print("Hello, World!")
