@@ -40,10 +40,11 @@ Item {
     signal customExpressionRequested(string text)
 
     function initialize(expressions) {
-        root.expressions = expressions
+        var sortedExpressions = [...expressions].sort((a, b) => a[0].localeCompare(b[0]))
+        root.expressions = sortedExpressions
         var state = {}
-        for (var i = 0; i < expressions.length; i++) {
-            state[expressions[i][0]] = expressions[i][1]
+        for (var i = 0; i < sortedExpressions.length; i++) {
+            state[sortedExpressions[i][0]] = sortedExpressions[i][1]
         }
         root.selectionState = state
     }
